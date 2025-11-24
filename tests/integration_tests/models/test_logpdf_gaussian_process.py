@@ -14,6 +14,8 @@
 #
 """Integration tests for various Gaussian Process approximation methods."""
 
+import itertools
+
 import numpy as np
 import pytest
 
@@ -53,11 +55,41 @@ def fixture_parameters():
     return parameters
 
 
+class DefectivePark91aWrapper:
+    """Wrapper to introduce defects in the park91a_hifi_on_grid function."""
+
+    def __init__(self, every_n=10):
+        """Initialize the Wrapper.
+
+        Args:
+            every_n (int, optional): Frequency of which the park91a_hifi_on_grid function introduces
+            defects. Defaults to 10.
+        """
+        self.counter = itertools.count()
+        self.every_n = every_n
+
+    def __call__(self, x1, x2):
+        """Call the defective park91a_hifi_on_grid function.
+
+        Args:
+            x1 (float): input parameter 1
+            x2 (float): input parameter 2
+
+        Returns:
+            np.ndarray: output of the park91a_hifi_on_grid function, possibly with defects
+            introduced.
+        """
+        y = park91a_hifi_on_grid(x1, x2)
+        if next(self.counter) % self.every_n == 0:
+            y[0] = np.nan
+        return y
+
+
 @pytest.fixture(name="likelihood_model")
 def fixture_likelihood_model(parameters, global_settings):
     """A Gaussian likelihood model."""
     np.random.seed(42)
-    driver = Function(parameters=parameters, function=park91a_hifi_on_grid)
+    driver = Function(parameters=parameters, function=DefectivePark91aWrapper(every_n=9))
     scheduler = Pool(experiment_name=global_settings.experiment_name)
     forward_model = Simulation(scheduler=scheduler, driver=driver)
 
