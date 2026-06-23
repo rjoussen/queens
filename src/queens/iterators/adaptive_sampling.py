@@ -17,6 +17,7 @@
 import logging
 import pickle
 import types
+from typing import Any, Protocol
 
 import jax
 import jax.numpy as jnp
@@ -27,9 +28,10 @@ from queens.iterators._iterator import Iterator
 from queens.iterators.sequential_monte_carlo_chopin import SequentialMonteCarloChopin
 from queens.utils.io import load_result
 
+from queens.visualization.adaptive_sampling_visualization import AdaptiveSamplingVisualization
+
 _logger = logging.getLogger(__name__)
 jax.config.update("jax_enable_x64", True)
-
 
 class AdaptiveSampling(Iterator):
     """Adaptive sampling iterator.
@@ -43,6 +45,9 @@ class AdaptiveSampling(Iterator):
         seed (int, opt): Seed for random number generation
         restart_file (str, opt): Result file path for restarts
         cs_div_criterion (float): Cauchy-Schwarz divergence stopping criterion threshold
+        visualization (obj, opt): Adaptive sampling visualization object
+        fallback_candidate_pool_size (int): Number of prior candidates to score with the surrogate
+                                            posterior when SMC has too few fresh particles
         x_train (np.ndarray): Training input samples
         x_train_new (np.ndarray): Newly drawn training samples
         y_train (np.ndarray): Training likelihood output samples
@@ -62,6 +67,7 @@ class AdaptiveSampling(Iterator):
         seed=41,
         restart_file=None,
         cs_div_criterion=0.01,
+        visualization: AdaptiveSamplingVisualization | None = None,
     ):
         """Initialise AdaptiveSampling.
 
@@ -79,6 +85,7 @@ class AdaptiveSampling(Iterator):
             seed (int, opt): Seed for random number generation.
             restart_file (str, opt): Result file path for restarts.
             cs_div_criterion (float): Cauchy-Schwarz divergence stopping criterion threshold.
+            visualization (obj, opt): Visualization object
         """
         super().__init__(model, parameters, global_settings)
         self.seed = seed
@@ -95,6 +102,7 @@ class AdaptiveSampling(Iterator):
         self.y_train = np.empty((0, 1))
         self.model_outputs = np.empty((0, self.likelihood_model.y_obs.size))
         self.model_outputs_failed = np.empty((0, self.likelihood_model.y_obs.size))
+        self.visualization = visualization
 
     def pre_run(self):
         """Pre run."""
@@ -142,6 +150,9 @@ class AdaptiveSampling(Iterator):
             self.x_train_new = self.choose_new_samples(particles, weights)
 
             cs_div = self.write_results(particles, weights, log_posterior, i)
+            if self.visualization is not None:
+                results = load_result(self.global_settings.result_file(".pickle"))
+                self.visualization.plot(results, i, self.global_settings.output_dir)
 
             if cs_div < self.cs_div_criterion:
                 _logger.info(
