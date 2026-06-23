@@ -175,8 +175,11 @@ class AdaptiveSampling(Iterator):
         self.model_outputs = np.concatenate([self.model_outputs, model_output], axis=0)
         # filter failed evaluations from model outputs and x_train
         self._filter_failed_evaluations()
-        if self.likelihood_model.noise_type.startswith("MAP"):
-            self.likelihood_model.update_covariance(model_output)
+        if self.likelihood_model.has_dynamic_noise():
+            covariance_update_outputs = self.model_outputs
+            if not self.likelihood_model.requires_covariance_history():
+                covariance_update_outputs = model_output
+            self.likelihood_model.update_covariance(covariance_update_outputs)
         log_likelihood = self.likelihood_model.normal_distribution.logpdf(self.model_outputs)
         log_likelihood -= self.likelihood_model.normal_distribution.logpdf_const
         return log_likelihood

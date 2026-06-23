@@ -16,6 +16,7 @@
 
 import warnings
 
+import logging
 import numpy as np
 
 from queens.distributions.normal import Normal
@@ -23,6 +24,8 @@ from queens.models.likelihoods._likelihood import Likelihood
 from queens.utils.exceptions import InvalidOptionError
 from queens.utils.logger_settings import log_init_args
 from queens.utils.numpy_linalg import add_nugget_to_diagonal
+
+logger_ = logging.getLogger(__name__)
 
 
 class Gaussian(Likelihood):
@@ -49,6 +52,11 @@ class Gaussian(Likelihood):
         Instance of Gaussian Class
     """
 
+    BEST_FIT_NOISE_TYPES = (
+        "best_fit_adaptive_variance",
+        "best_fit_adaptive_variance_vector",
+    )
+
     @log_init_args
     def __init__(
         self,
@@ -59,6 +67,7 @@ class Gaussian(Likelihood):
         noise_var_iterative_averaging=None,
         y_obs=None,
         experimental_data_reader=None,
+        sigma_factor=1.0,
     ):
         """Initialize likelihood model.
 
@@ -71,6 +80,8 @@ class Gaussian(Likelihood):
             noise_var_iterative_averaging (obj): Iterative averaging object
             y_obs (array_like): Vector with observations
             experimental_data_reader (obj): Experimental data reader
+            sigma_factor (float): Multiplier applied to the best residual RMSE to obtain the
+                                  target adaptive standard deviation
         """
         if y_obs is not None and experimental_data_reader is not None:
             warnings.warn(
@@ -91,6 +102,11 @@ class Gaussian(Likelihood):
 
         if noise_value is None and noise_type.startswith("fixed"):
             raise InvalidOptionError(f"You have to provide a 'noise_value' for {noise_type}.")
+        if noise_type in self.BEST_FIT_NOISE_TYPES and noise_value is None:
+            raise InvalidOptionError(
+                "You have to provide an initial 'noise_value' (variance) for "
+                f"'{noise_type}'."
+            )
 
         if noise_type == "fixed_variance":
             covariance = noise_value * np.eye(y_obs_dim)
@@ -104,6 +120,10 @@ class Gaussian(Likelihood):
             "MAP_jeffrey_covariance_matrix",
         ]:
             covariance = np.eye(y_obs_dim)
+        elif noise_type == "best_fit_adaptive_variance":
+            covariance = noise_value * np.eye(y_obs_dim)
+        elif noise_type == "best_fit_adaptive_variance_vector":
+            covariance = np.diag(np.array(noise_value).reshape(-1))
         else:
             raise NotImplementedError
 
@@ -113,6 +133,27 @@ class Gaussian(Likelihood):
         self.noise_type = noise_type
         self.noise_var_iterative_averaging = noise_var_iterative_averaging
         self.normal_distribution = normal_distribution
+        self.sigma_factor = sigma_factor
+        self.sigma_current = None
+        if noise_type == "best_fit_adaptive_variance":
+            self.sigma_current = np.array([np.sqrt(float(noise_value))], dtype=float)
+        elif noise_type == "best_fit_adaptive_variance_vector":
+            self.sigma_current = np.sqrt(np.array(noise_value, ndmin=1, dtype=float))
+
+        if noise_type == "best_fit_adaptive_variance_vector":
+            if self.sigma_current.size != y_obs_dim:
+                raise InvalidOptionError(
+                    "The initial 'noise_value' for 'best_fit_adaptive_variance_vector' must "
+                    "provide one variance per observation entry."
+                )
+
+    def has_dynamic_noise(self):
+        """Return whether the likelihood updates its covariance from model responses."""
+        return self.noise_type.startswith("MAP") or self.noise_type in self.BEST_FIT_NOISE_TYPES
+
+    def requires_covariance_history(self):
+        """Return whether covariance updates should use the full response history."""
+        return self.noise_type in self.BEST_FIT_NOISE_TYPES
 
     def _evaluate(self, samples):
         """Evaluate likelihood with current set of input samples.
@@ -124,7 +165,7 @@ class Gaussian(Likelihood):
             dict: log-likelihood values at input samples
         """
         self.response = self.forward_model.evaluate(samples)
-        if self.noise_type.startswith("MAP"):
+        if self.has_dynamic_noise():
             self.update_covariance(self.response["result"])
         log_likelihood = self.normal_distribution.logpdf(self.response["result"])
 
@@ -158,12 +199,28 @@ class Gaussian(Likelihood):
         Args:
             y_model (np.ndarray): Forward model output with shape (samples, outputs)
         """
+        if y_model.size == 0:
+            return
+
         dist = y_model - self.y_obs.reshape(1, -1)
         num_samples, dim_y = y_model.shape
         if self.noise_type == "MAP_jeffrey_variance":
             covariance = np.eye(dim_y) / (dim_y * (num_samples + dim_y + 2)) * np.sum(dist**2)
         elif self.noise_type == "MAP_jeffrey_variance_vector":
             covariance = np.diag(1 / (num_samples + dim_y + 2) * np.sum(dist**2, axis=0))
+        elif self.noise_type == "best_fit_adaptive_variance":
+            rmse = np.sqrt(np.mean(dist**2, axis=1))
+            best_rmse = np.min(rmse)
+            sigma_target = self.sigma_factor * best_rmse
+            self.sigma_current[0] = min(self.sigma_current[0], sigma_target)
+            covariance = (self.sigma_current[0] ** 2) * np.eye(dim_y)
+        elif self.noise_type == "best_fit_adaptive_variance_vector":
+            rmse = np.sqrt(np.mean(dist**2, axis=1))
+            best_idx = np.argmin(rmse)
+            best_abs_residual = np.abs(dist[best_idx])
+            sigma_target = self.sigma_factor * best_abs_residual
+            self.sigma_current = np.minimum(self.sigma_current, sigma_target)
+            covariance = np.diag(self.sigma_current**2)
         else:
             covariance = 1 / (num_samples + dim_y + 2) * np.dot(dist.T, dist)
 
@@ -173,3 +230,4 @@ class Gaussian(Likelihood):
 
         covariance = add_nugget_to_diagonal(covariance, self.nugget_noise_variance)
         self.normal_distribution.update_covariance(covariance)
+        logger_.info(f"Updated covariance matrix of Gaussian likelihood:\n{covariance}")
