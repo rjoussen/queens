@@ -52,6 +52,8 @@ def fixture_my_lik_model():
         def __init__(self):
             """A fake init method."""
             self.cov = None
+            self.covariance = np.eye(1)
+            self.precision = np.eye(1)
 
         def logpdf(self, x):
             """A fake logpdf method."""
@@ -64,6 +66,8 @@ def fixture_my_lik_model():
         def update_covariance(self, x):
             """A fake eval method."""
             self.cov = x
+            self.covariance = x
+            self.precision = np.linalg.pinv(x)
 
         def grad_logpdf(self, x):
             """A fake grad logpdf fun."""
@@ -186,11 +190,9 @@ def test_has_dynamic_noise(my_lik_model):
 
     my_lik_model.noise_type = "best_fit_adaptive_variance"
     assert my_lik_model.has_dynamic_noise()
-    assert my_lik_model.requires_covariance_history()
 
     my_lik_model.noise_type = "fixed_variance"
     assert not my_lik_model.has_dynamic_noise()
-    assert not my_lik_model.requires_covariance_history()
 
 
 def test_update_covariance_empty_input_is_noop(my_lik_model):
@@ -209,10 +211,68 @@ def test_update_covariance_best_fit_variance(my_lik_model):
     my_lik_model.noise_type = "best_fit_adaptive_variance"
     my_lik_model.sigma_factor = 1.0
     my_lik_model.sigma_current = np.array([2.0])
+    my_lik_model.normal_distribution.covariance = np.array([[1.0]])
+    my_lik_model.normal_distribution.precision = np.array([[1.0]])
+    my_lik_model.covariance_update_history = np.empty((0, 1))
 
     my_lik_model.update_covariance(np.array([[2.0], [2.5]]))
 
     np.testing.assert_array_equal(my_lik_model.normal_distribution.cov, np.array([[0.25]]))
+
+
+def test_update_covariance_best_fit_variance_uses_best_sample_from_all_outputs(my_lik_model):
+    """Test best-fit adaptive variance selects the best sample from all outputs."""
+    my_lik_model.noise_type = "best_fit_adaptive_variance"
+    my_lik_model.sigma_factor = 1.0
+    my_lik_model.sigma_current = np.array([3.0])
+    my_lik_model.normal_distribution.covariance = np.array([[1.0]])
+    my_lik_model.normal_distribution.precision = np.array([[1.0]])
+    my_lik_model.covariance_update_history = np.empty((0, 1))
+    my_lik_model.update_covariance(np.array([[4.0]]))
+    my_lik_model.update_covariance(np.array([[2.5]]))
+
+    np.testing.assert_array_equal(my_lik_model.normal_distribution.cov, np.array([[0.25]]))
+    np.testing.assert_array_equal(my_lik_model.covariance_update_history, np.array([[4.0], [2.5]]))
+
+
+def test_update_covariance_best_fit_variance_vector_uses_best_sample_from_all_outputs(
+    my_lik_model,
+):
+    """Test best-fit adaptive variance vector selects the best sample from all outputs."""
+    my_lik_model.noise_type = "best_fit_adaptive_variance_vector"
+    my_lik_model.sigma_factor = 1.0
+    my_lik_model.sigma_current = np.array([3.0, 3.0])
+    my_lik_model.y_obs = np.array([3.0, 3.0])
+    my_lik_model.normal_distribution.covariance = np.eye(2)
+    my_lik_model.normal_distribution.precision = np.eye(2)
+    my_lik_model.covariance_update_history = np.empty((0, 2))
+
+    my_lik_model.update_covariance(np.array([[4.0, 6.0]]))
+    my_lik_model.update_covariance(np.array([[2.5, 3.5]]))
+
+    np.testing.assert_array_equal(
+        my_lik_model.normal_distribution.cov, np.array([[0.25, 0.0], [0.0, 0.25]])
+    )
+    np.testing.assert_array_equal(
+        my_lik_model.covariance_update_history, np.array([[4.0, 6.0], [2.5, 3.5]])
+    )
+
+
+def test_update_covariance_smallest_mahalanobis_distance_keeps_best_sample(my_lik_model):
+    """Test Mahalanobis-based updates reuse the stored best residual if no improvement occurs."""
+    my_lik_model.noise_type = "smallest_mahalanobis_distance"
+    my_lik_model.sigma_factor = 1.0
+    my_lik_model.y_obs = np.array([3.0, 3.0])
+    my_lik_model.normal_distribution.covariance = np.eye(2)
+    my_lik_model.normal_distribution.precision = np.eye(2)
+    my_lik_model.best_mahalanobis_residual = None
+
+    my_lik_model.update_covariance(np.array([[2.5, 3.5]]))
+    np.testing.assert_array_equal(my_lik_model.normal_distribution.cov, np.array([[0.25, 0.0], [0.0, 0.25]]))
+
+    my_lik_model.update_covariance(np.array([[5.0, 5.0]]))
+    np.testing.assert_array_equal(my_lik_model.best_mahalanobis_residual, np.array([-0.5, 0.5]))
+    np.testing.assert_array_equal(my_lik_model.normal_distribution.cov, np.array([[0.25, 0.0], [0.0, 0.25]]))
 
 
 def test_grad(my_lik_model):
