@@ -38,11 +38,10 @@ AdaptiveSamplingResults = Mapping[str, Sequence[Any]]
 Bounds = tuple[float, float]
 
 class AdaptiveSamplingVisualization:
-    """Plot adaptive sampling posterior diagnostics for scalar parameters."""
+    """Plot adaptive sampling posterior diagnostics."""
 
     def __init__(
         self,
-        parameters: Parameters,
         kde_grid_size: int = 50,
         kde_num_points: int = 100,
         contour_levels: int = 10,
@@ -51,14 +50,11 @@ class AdaptiveSamplingVisualization:
         """Initialize adaptive sampling visualization.
 
         Args:
-            parameters (Parameters): Scalar QUEENS parameters to visualize.
             kde_grid_size (int): Number of grid points per axis for bivariate KDEs.
             kde_num_points (int): Number of support points for univariate KDEs.
             contour_levels (int): Number of contour levels for bivariate KDEs.
             plot_map_estimate (bool): Whether to highlight the current MAP training sample.
         """
-        self._check_scalar_parameters(parameters)
-        self.parameters = parameters
         self.plot_bounds: dict[str, Bounds] = {}
         self.kde_grid_size = kde_grid_size
         self.kde_num_points = kde_num_points
@@ -67,7 +63,6 @@ class AdaptiveSamplingVisualization:
 
     def prepare(self, plotting_dir: Path) -> None:
         """Prepare the visualization environment."""
-
         plt.switch_backend("Agg") # prevent GUI backends from being used in adaptive-sampling plotting
 
         self.plotting_dir = plotting_dir
@@ -77,24 +72,23 @@ class AdaptiveSamplingVisualization:
             file.unlink()
 
     def plot(
-        self, results: AdaptiveSamplingResults, iteration: int
-    ):
+        self, results: AdaptiveSamplingResults, iteration: int, parameters: Parameters
+    ) -> None:
         """Plot adaptive sampling posterior diagnostics for one iteration."""
-        
-        pair_grid = self._plot_marginal_posterior_grid(results, iteration)
+        pair_grid = self._plot_marginal_posterior_grid(results, iteration, parameters)
         
         pair_grid.figure.savefig(self.plotting_dir / f"adaptive_sampling_iteration_{iteration}.png", dpi=300, bbox_inches="tight")
         plt.close()
 
     def _plot_marginal_posterior_grid(
-        self, results: AdaptiveSamplingResults, iteration: int
+        self, results: AdaptiveSamplingResults, iteration: int, parameters: Parameters
     ) -> PairGrid:
         """Create a pair grid of univariate and bivariate marginal posteriors."""
-        data_frame = self._particles_to_dataframe(results, iteration)
+        data_frame = self._particles_to_dataframe(results, iteration, parameters)
         weights = data_frame["weights"].to_numpy()
         contours: list[QuadContourSet] = []
-        parameter_names = self.parameters.names
-        self.plot_bounds = self._plot_bounds(results, iteration)
+        parameter_names = parameters.parameters_keys
+        self.plot_bounds = self._plot_bounds(results, iteration, parameters)
 
         map_sample = None
         if self.plot_map_estimate:
@@ -104,7 +98,7 @@ class AdaptiveSamplingVisualization:
         pair_grid.figure.set_size_inches(10, 10)
 
         def plot_diag(x: pd.Series, **_kwargs: Any) -> None:
-            self._plot_1d_posterior(x, weights, map_sample)
+            self._plot_1d_posterior(x, weights, parameters, map_sample)
             if self.plot_map_estimate:
                 axes = plt.gca()
                 axes.set_ylim(bottom=0)
@@ -115,11 +109,11 @@ class AdaptiveSamplingVisualization:
                 contours.append(self._plot_2d_posterior(x, y, weights))
 
             def plot_upper(x: pd.Series, y: pd.Series, **_kwargs: Any) -> None:
-                self._plot_training_samples(x, y, results, iteration)
+                self._plot_training_samples(x, y, results, iteration, parameters)
 
             def plot_lower(x: pd.Series, y: pd.Series, **_kwargs: Any) -> None:
                 if self.plot_map_estimate:
-                    self._plot_map_estimate_2d(x, y, map_sample)
+                    self._plot_map_estimate_2d(x, y, map_sample, parameters)
 
             pair_grid.map_diag(plot_diag)
             pair_grid.map_offdiag(plot_offdiag)
@@ -132,20 +126,25 @@ class AdaptiveSamplingVisualization:
             fontsize=14,
             fontweight="bold",
         )
-        self._format_pair_grid_figure(pair_grid.figure, contours[0])
+        self._format_pair_grid_figure(
+            pair_grid.figure, contours[0] if contours else None, parameters
+        )
         return pair_grid
 
     def _particles_to_dataframe(
-        self, results: AdaptiveSamplingResults, iteration: int
+        self,
+        results: AdaptiveSamplingResults,
+        iteration: int,
+        parameters: Parameters,
     ) -> pd.DataFrame:
         """Convert posterior particles for one iteration into a weighted DataFrame."""
         particles = np.asarray(results["particles"][iteration], dtype=float)
         if particles.ndim == 1:
             particles = particles.reshape(-1, 1)
-        if particles.shape[1] != self.parameters.num_parameters:
-            raise ValueError("Particle dimension does not match the scalar parameters.")
+        if particles.shape[1] != parameters.num_parameters:
+            raise ValueError("Particle dimension does not match the parameters.")
 
-        data_frame = pd.DataFrame(particles, columns=self.parameters.names)
+        data_frame = pd.DataFrame(particles, columns=parameters.parameters_keys)
         weights = np.asarray(results["weights"][iteration], dtype=float).reshape(-1)
         if weights.size != particles.shape[0]:
             raise ValueError("Number of weights does not match the number of particles.")
@@ -156,6 +155,7 @@ class AdaptiveSamplingVisualization:
         self,
         x: pd.Series,
         weights: ArrayLike,
+        parameters: Parameters,
         map_sample: np.ndarray | None = None,
         **_kwargs: Any,
     ) -> None:
@@ -168,15 +168,25 @@ class AdaptiveSamplingVisualization:
         grid = np.linspace(bounds[0], bounds[1], self.kde_num_points)
         density = gaussian_kde(values, weights=weights)(grid)
 
-        axes.plot(grid, density, label= "Posterior Density" if len(self.parameters.names) == 1 else "Marginal Posterior Density")
+        axes.plot(
+            grid,
+            density,
+            label=(
+                "Posterior Density"
+                if len(parameters.parameters_keys) == 1
+                else "Marginal Posterior Density"
+            ),
+        )
         axes.fill_between(grid, density, alpha=0.3)
 
-        prior_density = np.asarray(self.parameters.dict[name].pdf(grid)).reshape(-1)
-        axes.plot(grid, prior_density, linestyle=":", label="Prior Density")
+        parameter = parameters.dict.get(name)
+        if parameter is not None and parameter.dimension == 1:
+            prior_density = np.asarray(parameter.pdf(grid)).reshape(-1)
+            axes.plot(grid, prior_density, linestyle=":", label="Prior Density")
 
         if self.plot_map_estimate and map_sample is not None:
             axes.axvline(
-                map_sample[self.parameters.names.index(name)],
+                map_sample[parameters.parameters_keys.index(name)],
                 color="grey",
                 linestyle="--",
                 linewidth=1.2,
@@ -219,10 +229,11 @@ class AdaptiveSamplingVisualization:
         y: pd.Series,
         results: AdaptiveSamplingResults,
         iteration: int,
+        parameters: Parameters,
     ) -> None:
         """Overlay adaptive training samples in bivariate panels."""
-        x_index = self.parameters.names.index(str(x.name))
-        y_index = self.parameters.names.index(str(y.name))
+        x_index = parameters.parameters_keys.index(str(x.name))
+        y_index = parameters.parameters_keys.index(str(y.name))
 
         plt.scatter(
             results["x_train"][iteration][:, x_index], results["x_train"][iteration][:, y_index], marker=".", color="gray", label="Training Samples", s=15
@@ -235,13 +246,17 @@ class AdaptiveSamplingVisualization:
         )
 
     def _plot_map_estimate_2d(
-        self, x: pd.Series, y: pd.Series, map_sample: np.ndarray
+        self,
+        x: pd.Series,
+        y: pd.Series,
+        map_sample: np.ndarray,
+        parameters: Parameters,
     ) -> None:
         """Plot the MAP training sample in lower-triangle panels."""
         if not self.plot_map_estimate or map_sample is None:
             return
-        x_index = self.parameters.names.index(str(x.name))
-        y_index = self.parameters.names.index(str(y.name))
+        x_index = parameters.parameters_keys.index(str(x.name))
+        y_index = parameters.parameters_keys.index(str(y.name))
         plt.scatter(
             map_sample[x_index],
             map_sample[y_index],
@@ -250,13 +265,14 @@ class AdaptiveSamplingVisualization:
             edgecolors="black",
             linewidths=1.2,
             s=45,
-            label=f"MAP estimate\n[{"\n ".join(f'{name}={map_sample[i]:.3f}' for i, name in enumerate(self.parameters.names))}]",
+            label=f"MAP estimate\n[{"\n ".join(f'{name}={map_sample[i]:.3f}' for i, name in enumerate(parameters.parameters_keys))}]",
         )
 
     def _format_pair_grid_figure(
         self,
         figure: Figure,
-        contour: QuadContourSet | None
+        contour: QuadContourSet | None,
+        parameters: Parameters,
     ) -> None:
         """Add figure-level legend and colorbar."""
         legend = self._draw_legend_without_duplicates(
@@ -265,16 +281,19 @@ class AdaptiveSamplingVisualization:
             bbox_to_anchor=(1.0, 0.5),
         )
         if contour is not None and legend is not None:
-            self._add_colorbar_below_legend(figure, legend, contour)
+            self._add_colorbar_below_legend(figure, legend, contour, parameters)
 
     def _plot_bounds(
-        self, results: AdaptiveSamplingResults, iteration: int
+        self,
+        results: AdaptiveSamplingResults,
+        iteration: int,
+        parameters: Parameters,
     ) -> dict[str, Bounds]:
         """Return plotting bounds determined from posterior particles and evaluated training samples."""
-        all_samples = self._all_plot_samples(results, iteration)
+        all_samples = self._all_plot_samples(results, iteration, parameters)
 
         plot_bounds = {}
-        for index, name in enumerate(self.parameters.names):
+        for index, name in enumerate(parameters.parameters_keys):
             values = all_samples[:, index]
             finite = values[np.isfinite(values)]
 
@@ -284,7 +303,7 @@ class AdaptiveSamplingVisualization:
                 lower = float(np.min(finite))
                 upper = float(np.max(finite))
 
-            parameter = self.parameters.dict[name]
+            parameter = parameters.dict.get(name)
             if isinstance(parameter, Uniform):
                 lower_bound = np.asarray(parameter.lower_bound, dtype=float).reshape(-1)[0]
                 upper_bound = np.asarray(parameter.upper_bound, dtype=float).reshape(-1)[0]
@@ -301,13 +320,16 @@ class AdaptiveSamplingVisualization:
         return plot_bounds
 
     def _all_plot_samples(
-        self, results: AdaptiveSamplingResults, iteration: int
+        self,
+        results: AdaptiveSamplingResults,
+        iteration: int,
+        parameters: Parameters,
     ) -> np.ndarray:
         """Return all samples that should be visible in the plots."""
         return np.vstack(
             [
                 np.asarray(results[key][iteration], dtype=float).reshape(
-                    -1, self.parameters.num_parameters
+                    -1, parameters.num_parameters
                 )
                 for key in ("particles", "x_train", "x_train_new", "x_train_failed")
             ]
@@ -336,6 +358,7 @@ class AdaptiveSamplingVisualization:
         figure: Figure,
         legend: Any,
         contour: QuadContourSet,
+        parameters: Parameters,
     ) -> None:
         """Place a horizontal colorbar directly below the figure legend."""
         legend_box = legend.get_window_extent().transformed(figure.transFigure.inverted())
@@ -350,26 +373,19 @@ class AdaptiveSamplingVisualization:
             ]
         )
         colorbar = figure.colorbar(contour, orientation="horizontal", cax=colorbar_axes)
-        colorbar.set_label("Posterior Density" if len(self.parameters.names) == 2 else "Marginal Posterior Density")
+        colorbar.set_label(
+            "Posterior Density"
+            if len(parameters.parameters_keys) == 2
+            else "Marginal Posterior Density"
+        )
         if len(contour.levels) >= 2:
             colorbar.set_ticks([contour.levels[0], contour.levels[-1]])
             colorbar.set_ticklabels(["Low", "High"])
 
-    @staticmethod
-    def _check_scalar_parameters(parameters: Parameters) -> None:
-        """Check that all parameters are scalar."""
-        for parameter_name, parameter in parameters.dict.items():
-            if parameter.dimension != 1:
-                raise ValueError(
-                    "Adaptive sampling visualization currently supports only scalar parameters. "
-                    f"Parameter '{parameter_name}' has dimension {parameter.dimension}."
-                )
-
     def _get_map_sample(
         self, results: AdaptiveSamplingResults, iteration: int
     ) -> np.ndarray:
-        """Return the MAP training sample"""
-
+        """Return the MAP training sample."""
         log_posterior = np.asarray(results["log_posterior"][iteration], dtype=float)
 
         map_index = np.argmax(log_posterior)

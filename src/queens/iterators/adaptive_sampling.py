@@ -154,7 +154,7 @@ class AdaptiveSampling(Iterator):
             cs_div = self.write_results(particles, weights, log_posterior, i)
             if self.visualization is not None:
                 results = load_result(self.global_settings.result_file(".pickle"))
-                self.visualization.plot(results, i)
+                self.visualization.plot(results, i, self.parameters)
 
             if cs_div < self.cs_div_criterion:
                 _logger.info(

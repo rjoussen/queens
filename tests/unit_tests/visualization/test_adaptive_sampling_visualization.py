@@ -68,14 +68,13 @@ def test_plot_marginal_posterior_grid_saves_2d_plot(tmp_path, parameters_2d):
     """Test that the marginal posterior pair grid is saved for 2D results."""
     results = _adaptive_sampling_results(dimension=2)
     visualization = AdaptiveSamplingVisualization(
-        parameters=parameters_2d,
         kde_grid_size=8,
         kde_num_points=20,
         contour_levels=4,
     )
     visualization.prepare(tmp_path)
 
-    visualization.plot(results, iteration=0)
+    visualization.plot(results, iteration=0, parameters=parameters_2d)
 
     assert (tmp_path / "adaptive_sampling_iteration_0.png").is_file()
 
@@ -84,14 +83,13 @@ def test_plot_saves_pair_grid_for_three_scalar_parameters(tmp_path, parameters_3
     """Test that three scalar parameters are shown with the marginal posterior pair grid."""
     results = _adaptive_sampling_results(dimension=3)
     visualization = AdaptiveSamplingVisualization(
-        parameters=parameters_3d,
         kde_grid_size=8,
         kde_num_points=20,
         contour_levels=4,
     )
     visualization.prepare(tmp_path)
 
-    visualization.plot(results, iteration=0)
+    visualization.plot(results, iteration=0, parameters=parameters_3d)
 
     assert (tmp_path / "adaptive_sampling_iteration_0.png").is_file()
 
@@ -100,12 +98,13 @@ def test_plot_marginal_posterior_grid_draws_posterior_on_both_triangles(paramete
     """Test that off-diagonal plots include the bivariate posterior on both triangles."""
     results = _adaptive_sampling_results(dimension=2)
     visualization = AdaptiveSamplingVisualization(
-        parameters=parameters_2d,
         kde_grid_size=8,
         contour_levels=4,
     )
 
-    pair_grid = visualization._plot_marginal_posterior_grid(results, iteration=0)
+    pair_grid = visualization._plot_marginal_posterior_grid(
+        results, iteration=0, parameters=parameters_2d
+    )
 
     upper_axes = pair_grid.axes[0, 1]
     lower_axes = pair_grid.axes[1, 0]
@@ -114,12 +113,22 @@ def test_plot_marginal_posterior_grid_draws_posterior_on_both_triangles(paramete
     plt.close(pair_grid.figure)
 
 
-def test_non_scalar_parameters_raise_value_error():
-    """Test that only scalar parameters are accepted."""
+def test_multidimensional_parameter_is_plotted_without_prior():
+    """Test that vector components are plotted without unsupported prior marginals."""
     parameters = Parameters(x=Normal(mean=[0.0, 1.0], covariance=np.eye(2)))
+    results = _adaptive_sampling_results(dimension=2)
+    visualization = AdaptiveSamplingVisualization(kde_grid_size=8, contour_levels=4)
 
-    with pytest.raises(ValueError, match="supports only scalar parameters"):
-        AdaptiveSamplingVisualization(parameters=parameters)
+    pair_grid = visualization._plot_marginal_posterior_grid(
+        results, iteration=0, parameters=parameters
+    )
+
+    assert parameters.parameters_keys == ["x_0", "x_1"]
+    assert all(
+        "Prior Density" not in axes.get_legend_handles_labels()[1]
+        for axes in pair_grid.figure.axes
+    )
+    plt.close(pair_grid.figure)
 
 
 def test_adaptive_sampling_prepare_uses_agg_backend(tmp_path, parameters_2d, mocker):
@@ -127,7 +136,7 @@ def test_adaptive_sampling_prepare_uses_agg_backend(tmp_path, parameters_2d, moc
     switch_backend = mocker.patch(
         "queens.visualization.adaptive_sampling_visualization.plt.switch_backend"
     )
-    visualization = AdaptiveSamplingVisualization(parameters=parameters_2d)
+    visualization = AdaptiveSamplingVisualization()
 
     visualization.prepare(tmp_path)
 
@@ -139,17 +148,18 @@ def test_map_estimate_is_drawn_on_diag_and_lower_triangle(parameters_2d):
     results = _adaptive_sampling_results(dimension=2)
     results["log_posterior"][0] = np.linspace(-2.0, 2.0, results["particles"][0].shape[0])
     visualization = AdaptiveSamplingVisualization(
-        parameters=parameters_2d,
         plot_map_estimate=True,
         kde_grid_size=8,
         contour_levels=4,
     )
 
-    pair_grid = visualization._plot_marginal_posterior_grid(results, iteration=0)
+    pair_grid = visualization._plot_marginal_posterior_grid(
+        results, iteration=0, parameters=parameters_2d
+    )
 
     lower_collections = pair_grid.axes[1, 0].collections
     assert any(
-        getattr(collection, "get_label", lambda: None)() == "MAP estimate"
+        getattr(collection, "get_label", lambda: "")().startswith("MAP estimate")
         for collection in lower_collections
     )
     plt.close(pair_grid.figure)
@@ -160,7 +170,7 @@ def test_get_map_sample_uses_particle_log_posterior(parameters_2d):
     results = _adaptive_sampling_results(dimension=2)
     results["particles"][0] = np.array([[2.8, 2.8], [0.0, 0.0]])
     results["log_posterior"][0] = np.array([-3.0, -0.2])
-    visualization = AdaptiveSamplingVisualization(parameters=parameters_2d, plot_map_estimate=True)
+    visualization = AdaptiveSamplingVisualization(plot_map_estimate=True)
 
     map_sample = visualization._get_map_sample(results, 0)
 
