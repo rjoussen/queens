@@ -76,8 +76,6 @@ def test_plot_marginal_posterior_grid_saves_2d_plot(tmp_path, parameters_2d):
         kde_num_points=20,
         contour_levels=4,
     )
-    visualization.prepare()
-
     visualization.plot(results, iteration=0, parameters=parameters_2d, plotting_dir=tmp_path)
 
     assert (tmp_path / "adaptive_sampling_iteration_0.png").is_file()
@@ -91,8 +89,6 @@ def test_plot_saves_pair_grid_for_three_scalar_parameters(tmp_path, parameters_3
         kde_num_points=20,
         contour_levels=4,
     )
-    visualization.prepare()
-
     visualization.plot(results, iteration=0, parameters=parameters_3d, plotting_dir=tmp_path)
 
     assert (tmp_path / "adaptive_sampling_iteration_0.png").is_file()
@@ -154,14 +150,15 @@ def test_pair_grid_axes_keep_parameter_bounds_for_different_scales():
     plt.close(pair_grid.figure)
 
 
-def test_adaptive_sampling_prepare_uses_agg_backend(mocker):
+def test_adaptive_sampling_plot_uses_agg_backend(tmp_path, parameters_2d, mocker):
     """Test that adaptive-sampling plotting avoids GUI backends."""
+    results = _adaptive_sampling_results(dimension=2)
     switch_backend = mocker.patch(
         "queens.visualization.adaptive_sampling_visualization.plt.switch_backend"
     )
-    visualization = AdaptiveSamplingVisualization()
+    visualization = AdaptiveSamplingVisualization(kde_grid_size=8, contour_levels=4)
 
-    visualization.prepare()
+    visualization.plot(results, iteration=0, parameters=parameters_2d, plotting_dir=tmp_path)
 
     switch_backend.assert_called_once_with("Agg")
     assert not hasattr(visualization, "plotting_dir")

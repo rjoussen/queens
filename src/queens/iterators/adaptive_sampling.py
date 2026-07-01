@@ -102,9 +102,6 @@ class AdaptiveSampling(Iterator):
         self.model_outputs_failed = np.empty((0, self.likelihood_model.y_obs.size))
         self.visualization = visualization
 
-        if visualization is not None:
-            visualization.prepare()
-
     def pre_run(self):
         """Pre run."""
         np.random.seed(self.seed)
