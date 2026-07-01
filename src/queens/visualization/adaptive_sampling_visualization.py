@@ -24,18 +24,18 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import seaborn as sns
-from matplotlib.axes import Axes
 from matplotlib.contour import QuadContourSet
 from matplotlib.figure import Figure
 from numpy.typing import ArrayLike
 from seaborn.axisgrid import PairGrid
-from scipy.stats import gaussian_kde
 
+from queens.distributions.gaussian_kde import GaussianKDE
 from queens.distributions.uniform import Uniform
 from queens.parameters.parameters import Parameters
 
 AdaptiveSamplingResults = Mapping[str, Sequence[Any]]
 Bounds = tuple[float, float]
+
 
 class AdaptiveSamplingVisualization:
     """Plot adaptive sampling posterior diagnostics."""
@@ -61,29 +61,34 @@ class AdaptiveSamplingVisualization:
         self.contour_levels = contour_levels
         self.plot_map_estimate = plot_map_estimate
 
-    def prepare(self, plotting_dir: Path) -> None:
+    def prepare(self) -> None:
         """Prepare the visualization environment."""
-        plt.switch_backend("Agg") # prevent GUI backends from being used in adaptive-sampling plotting
-
-        self.plotting_dir = plotting_dir
-        plotting_dir.mkdir(parents=True, exist_ok=True)
-        # delete any existing files in the plotting directory
-        for file in plotting_dir.glob("adaptive_sampling_iteration_*.png"):
-            file.unlink()
+        plt.switch_backend(
+            "Agg"
+        )  # prevent GUI backends from being used in adaptive-sampling plotting
 
     def plot(
-        self, results: AdaptiveSamplingResults, iteration: int, parameters: Parameters
+        self,
+        results: AdaptiveSamplingResults,
+        iteration: int,
+        parameters: Parameters,
+        plotting_dir: Path,
     ) -> None:
         """Plot adaptive sampling posterior diagnostics for one iteration."""
+        plotting_dir.mkdir(parents=True, exist_ok=True)
         pair_grid = self._plot_marginal_posterior_grid(results, iteration, parameters)
-        
-        pair_grid.figure.savefig(self.plotting_dir / f"adaptive_sampling_iteration_{iteration}.png", dpi=300, bbox_inches="tight")
+
+        pair_grid.figure.savefig(
+            plotting_dir / f"adaptive_sampling_iteration_{iteration}.png",
+            dpi=300,
+            bbox_inches="tight",
+        )
         plt.close()
 
     def _plot_marginal_posterior_grid(
         self, results: AdaptiveSamplingResults, iteration: int, parameters: Parameters
     ) -> PairGrid:
-        """Create a pair grid of univariate and bivariate marginal posteriors."""
+        """Create a pair grid of posterior marginals."""
         data_frame = self._particles_to_dataframe(results, iteration, parameters)
         weights = data_frame["weights"].to_numpy()
         contours: list[QuadContourSet] = []
@@ -102,9 +107,9 @@ class AdaptiveSamplingVisualization:
             if self.plot_map_estimate:
                 axes = plt.gca()
                 axes.set_ylim(bottom=0)
-        
 
         if len(parameter_names) > 1:
+
             def plot_offdiag(x: pd.Series, y: pd.Series, **_kwargs: Any) -> None:
                 contours.append(self._plot_2d_posterior(x, y, weights))
 
@@ -137,7 +142,7 @@ class AdaptiveSamplingVisualization:
         iteration: int,
         parameters: Parameters,
     ) -> pd.DataFrame:
-        """Convert posterior particles for one iteration into a weighted DataFrame."""
+        """Convert posterior particles into a weighted DataFrame."""
         particles = np.asarray(results["particles"][iteration], dtype=float)
         if particles.ndim == 1:
             particles = particles.reshape(-1, 1)
@@ -166,7 +171,7 @@ class AdaptiveSamplingVisualization:
         weights = np.asarray(weights, dtype=float).reshape(-1)
         bounds = self.plot_bounds[name]
         grid = np.linspace(bounds[0], bounds[1], self.kde_num_points)
-        density = gaussian_kde(values, weights=weights)(grid)
+        density = GaussianKDE(values, weights=weights).pdf(grid)
 
         axes.plot(
             grid,
@@ -210,15 +215,13 @@ class AdaptiveSamplingVisualization:
         x_bounds = self.plot_bounds[str(x.name)]
         y_bounds = self.plot_bounds[str(y.name)]
 
-        kde = gaussian_kde(np.vstack([x_values, y_values]), weights=weights)
+        kde = GaussianKDE(np.column_stack([x_values, y_values]), weights=weights)
         grid_x, grid_y = np.meshgrid(
             np.linspace(x_bounds[0], x_bounds[1], self.kde_grid_size),
             np.linspace(y_bounds[0], y_bounds[1], self.kde_grid_size),
         )
-        density = kde(np.vstack([grid_x.ravel(), grid_y.ravel()])).reshape(grid_x.shape)
-        contour = axes.contourf(
-            grid_x, grid_y, density, levels=self.contour_levels, cmap="plasma"
-        )
+        density = kde.pdf(np.column_stack([grid_x.ravel(), grid_y.ravel()])).reshape(grid_x.shape)
+        contour = axes.contourf(grid_x, grid_y, density, levels=self.contour_levels, cmap="plasma")
         axes.set_xlim(x_bounds)
         axes.set_ylim(y_bounds)
         return contour
@@ -236,13 +239,30 @@ class AdaptiveSamplingVisualization:
         y_index = parameters.parameters_keys.index(str(y.name))
 
         plt.scatter(
-            results["x_train"][iteration][:, x_index], results["x_train"][iteration][:, y_index], marker=".", color="gray", label="Training Samples", s=15
+            results["x_train"][iteration][:, x_index],
+            results["x_train"][iteration][:, y_index],
+            marker=".",
+            color="gray",
+            label="Training Samples",
+            s=15,
         )
         plt.scatter(
-            results["x_train_new"][iteration][:, x_index], results["x_train_new"][iteration][:, y_index], marker="+", color="green", linewidth=2, label="Next Training Samples", s=35
+            results["x_train_new"][iteration][:, x_index],
+            results["x_train_new"][iteration][:, y_index],
+            marker="+",
+            color="green",
+            linewidth=2,
+            label="Next Training Samples",
+            s=35,
         )
         plt.scatter(
-            results["x_train_failed"][iteration][:, x_index], results["x_train_failed"][iteration][:, y_index], marker="x", color="red", linewidth=2, label="Failed Training Samples", s=20
+            results["x_train_failed"][iteration][:, x_index],
+            results["x_train_failed"][iteration][:, y_index],
+            marker="x",
+            color="red",
+            linewidth=2,
+            label="Failed Training Samples",
+            s=20,
         )
 
     def _plot_map_estimate_2d(
@@ -265,7 +285,14 @@ class AdaptiveSamplingVisualization:
             edgecolors="black",
             linewidths=1.2,
             s=45,
-            label=f"MAP estimate\n[{"\n ".join(f'{name}={map_sample[i]:.3f}' for i, name in enumerate(parameters.parameters_keys))}]",
+            label=(
+                "MAP estimate\n["
+                + "\n ".join(
+                    f"{name}={map_sample[i]:.3f}"
+                    for i, name in enumerate(parameters.parameters_keys)
+                )
+                + "]"
+            ),
         )
 
     def _format_pair_grid_figure(
@@ -289,7 +316,7 @@ class AdaptiveSamplingVisualization:
         iteration: int,
         parameters: Parameters,
     ) -> dict[str, Bounds]:
-        """Return plotting bounds determined from posterior particles and evaluated training samples."""
+        """Determine plot bounds from particles and training samples."""
         all_samples = self._all_plot_samples(results, iteration, parameters)
 
         plot_bounds = {}
@@ -311,9 +338,7 @@ class AdaptiveSamplingVisualization:
                 upper = max(upper, float(upper_bound))
 
             margin = (
-                max(1.0, abs(lower) * 0.1)
-                if np.isclose(lower, upper)
-                else 0.05 * (upper - lower)
+                max(1.0, abs(lower) * 0.1) if np.isclose(lower, upper) else 0.05 * (upper - lower)
             )
             plot_bounds[name] = (lower - margin, upper + margin)
 
@@ -382,9 +407,7 @@ class AdaptiveSamplingVisualization:
             colorbar.set_ticks([contour.levels[0], contour.levels[-1]])
             colorbar.set_ticklabels(["Low", "High"])
 
-    def _get_map_sample(
-        self, results: AdaptiveSamplingResults, iteration: int
-    ) -> np.ndarray:
+    def _get_map_sample(self, results: AdaptiveSamplingResults, iteration: int) -> np.ndarray:
         """Return the MAP training sample."""
         log_posterior = np.asarray(results["log_posterior"][iteration], dtype=float)
 
