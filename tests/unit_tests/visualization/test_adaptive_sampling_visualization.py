@@ -131,6 +131,30 @@ def test_multidimensional_parameter_is_plotted_without_prior():
     plt.close(pair_grid.figure)
 
 
+def test_pair_grid_axes_keep_parameter_bounds_for_different_scales():
+    """Test that diagonal densities do not alter shared parameter axes."""
+    parameters = Parameters(x=Normal(mean=[250_000.0, 3_500.0], covariance=np.eye(2)))
+    results = _adaptive_sampling_results(dimension=2)
+    results["particles"][0][:, 0] += 250_000.0
+    results["particles"][0][:, 1] = 3_500.0 + 1e-6 * results["particles"][0][:, 1]
+    for key in ("x_train", "x_train_new", "x_train_failed"):
+        results[key][0][:, 0] += 250_000.0
+        results[key][0][:, 1] += 3_500.0
+    visualization = AdaptiveSamplingVisualization(kde_grid_size=8, contour_levels=4)
+
+    pair_grid = visualization._plot_marginal_posterior_grid(
+        results, iteration=0, parameters=parameters
+    )
+
+    assert pair_grid.axes[1, 0].get_ylim() == pytest.approx(
+        visualization.plot_bounds["x_1"]
+    )
+    assert pair_grid.axes[0, 1].get_xlim() == pytest.approx(
+        visualization.plot_bounds["x_1"]
+    )
+    plt.close(pair_grid.figure)
+
+
 def test_adaptive_sampling_prepare_uses_agg_backend(tmp_path, parameters_2d, mocker):
     """Test that adaptive-sampling plotting avoids GUI backends."""
     switch_backend = mocker.patch(
