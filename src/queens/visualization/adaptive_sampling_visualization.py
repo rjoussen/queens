@@ -84,7 +84,7 @@ class AdaptiveSamplingVisualization:
         pair_grid = self._plot_marginal_posterior_grid(results, iteration, parameters)
 
         pair_grid.figure.savefig(
-            plotting_dir / f"adaptive_sampling_iteration_{iteration}.png",
+            plotting_dir / f"adaptive_sampling_iteration_{iteration}.svg",
             dpi=300,
             bbox_inches="tight",
         )
