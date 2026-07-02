@@ -18,6 +18,7 @@ import numpy as np
 from numpy.typing import ArrayLike
 from scipy.special import logsumexp
 from scipy.stats import gaussian_kde
+from sklearn.cluster import KMeans
 
 from queens.distributions._distribution import Continuous
 from queens.utils.logger_settings import log_init_args
@@ -26,8 +27,9 @@ from queens.utils.logger_settings import log_init_args
 class GaussianKDE(Continuous):
     """Multivariate Gaussian kernel density estimate.
 
-    Samples are expected row-wise, consistent with the other QUEENS distributions. Internally,
-    SciPy represents the KDE as a weighted mixture of equally shaped Gaussian kernels.
+    Samples are expected row-wise, consistent with the other QUEENS
+    distributions. Internally, SciPy represents the KDE as a weighted
+    mixture of equally shaped Gaussian kernels.
     """
 
     @log_init_args
@@ -94,6 +96,62 @@ class GaussianKDE(Continuous):
         """Evaluate the log probability density."""
         x = np.asarray(x, dtype=float).reshape(-1, self.dimension)
         return self.scipy_kde.logpdf(x.T)
+
+    def reduce(
+        self,
+        num_kernels: int,
+        random_state: int | None = None,
+    ) -> "GaussianKDE":
+        """Approximate the KDE using fewer representative kernels.
+
+        Weighted k-means is used to replace groups of samples by their weighted cluster centers.
+        Each center receives the total weight of its cluster. The original scalar bandwidth factor
+        is retained, but the kernel covariance is recomputed from the reduced samples.
+
+        Args:
+            num_kernels: Maximum number of kernels in the reduced KDE. It must be larger than the
+                         distribution dimension.
+            random_state: Random state used to initialize weighted k-means.
+
+        Returns:
+            Reduced Gaussian KDE, or this KDE if it already has at most ``num_kernels`` kernels.
+        """
+        if (
+            not isinstance(num_kernels, (int, np.integer))
+            or isinstance(num_kernels, bool)
+            or num_kernels <= self.dimension
+        ):
+            raise ValueError(
+                "Number of kernels must be an integer larger than the distribution dimension."
+            )
+
+        positive_weights = self.weights > 0
+        samples = self.samples[positive_weights]
+        weights = self.weights[positive_weights]
+        if samples.shape[0] <= num_kernels:
+            return self
+
+        clustering = KMeans(
+            n_clusters=num_kernels,
+            random_state=random_state,
+            n_init="auto",
+        )
+        labels = clustering.fit_predict(samples, sample_weight=weights)
+        reduced_weights = np.bincount(
+            labels,
+            weights=weights,
+            minlength=num_kernels,
+        )
+        nonempty_clusters = reduced_weights > 0
+        reduced_samples = np.zeros((num_kernels, self.dimension))
+        np.add.at(reduced_samples, labels, samples * weights[:, np.newaxis])
+        reduced_samples[nonempty_clusters] /= reduced_weights[nonempty_clusters, np.newaxis]
+
+        return GaussianKDE(
+            reduced_samples[nonempty_clusters],
+            weights=reduced_weights[nonempty_clusters],
+            bandwidth=float(self.scipy_kde.factor),
+        )
 
     def pdf(self, x: np.ndarray) -> np.ndarray:
         """Evaluate the probability density."""

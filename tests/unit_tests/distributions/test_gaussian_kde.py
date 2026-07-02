@@ -69,6 +69,48 @@ def test_grad_logpdf(distribution):
     np.testing.assert_allclose(distribution.grad_logpdf(points), numerical_gradient, rtol=1e-5)
 
 
+def test_reduce():
+    """Reduce a weighted KDE while retaining its main density features."""
+    rng = np.random.default_rng(42)
+    samples = np.concatenate([rng.normal(-2.0, 0.7, 600), rng.normal(2.0, 1.0, 400)])
+    weights = np.linspace(1.0, 2.0, samples.size)
+    distribution = GaussianKDE(samples, weights=weights)
+
+    reduced = distribution.reduce(num_kernels=20, random_state=41)
+
+    assert reduced.samples.shape == (20, 1)
+    assert np.sum(reduced.weights) == pytest.approx(1.0)
+    np.testing.assert_allclose(reduced.mean, distribution.mean, atol=1e-12)
+    grid = np.linspace(-5.0, 5.0, 101)
+    relative_l1_error = np.trapezoid(np.abs(reduced.pdf(grid) - distribution.pdf(grid)), grid)
+    assert relative_l1_error < 0.15
+
+
+def test_reduce_is_reproducible():
+    """Use the supplied random state for reduction."""
+    rng = np.random.default_rng(42)
+    distribution = GaussianKDE(rng.normal(size=(100, 2)))
+
+    reduced_1 = distribution.reduce(num_kernels=10, random_state=7)
+    reduced_2 = distribution.reduce(num_kernels=10, random_state=7)
+
+    np.testing.assert_allclose(reduced_1.samples, reduced_2.samples)
+    np.testing.assert_allclose(reduced_1.weights, reduced_2.weights)
+
+
+def test_reduce_returns_existing_small_kde(distribution):
+    """Avoid refitting a KDE that is already sufficiently small."""
+    assert distribution.reduce(num_kernels=4) is distribution
+
+
+@pytest.mark.parametrize("num_kernels", [True, 1, 1.5])
+def test_reduce_rejects_invalid_number_of_kernels(num_kernels):
+    """Require enough kernels for a nonsingular one-dimensional KDE."""
+    distribution = GaussianKDE([-1.0, 0.0, 1.0])
+    with pytest.raises(ValueError, match="integer larger"):
+        distribution.reduce(num_kernels)
+
+
 def test_fit_normal_samples():
     """Approximate the density that generated a representative sample."""
     rng = np.random.default_rng(42)
