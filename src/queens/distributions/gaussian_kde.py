@@ -18,7 +18,6 @@ import numpy as np
 from numpy.typing import ArrayLike
 from scipy.special import logsumexp
 from scipy.stats import gaussian_kde
-from sklearn.cluster import KMeans
 
 from queens.distributions._distribution import Continuous
 from queens.utils.logger_settings import log_init_args
@@ -104,14 +103,14 @@ class GaussianKDE(Continuous):
     ) -> "GaussianKDE":
         """Approximate the KDE using fewer representative kernels.
 
-        Weighted k-means is used to replace groups of samples by their weighted cluster centers.
-        Each center receives the total weight of its cluster. The original scalar bandwidth factor
-        is retained, but the kernel covariance is recomputed from the reduced samples.
+        Systematic resampling is used to draw an equally weighted representation from the weighted
+        empirical distribution. The KDE bandwidth is recomputed from the resampled particles unless
+        an explicit bandwidth was supplied when constructing this KDE.
 
         Args:
             num_kernels: Maximum number of kernels in the reduced KDE. It must be larger than the
                          distribution dimension.
-            random_state: Random state used to initialize weighted k-means.
+            random_state: Seed used for systematic resampling.
 
         Returns:
             Reduced Gaussian KDE, or this KDE if it already has at most ``num_kernels`` kernels.
@@ -125,32 +124,18 @@ class GaussianKDE(Continuous):
                 "Number of kernels must be an integer larger than the distribution dimension."
             )
 
-        positive_weights = self.weights > 0
-        samples = self.samples[positive_weights]
-        weights = self.weights[positive_weights]
-        if samples.shape[0] <= num_kernels:
+        if self.samples.shape[0] <= num_kernels:
             return self
 
-        clustering = KMeans(
-            n_clusters=num_kernels,
-            random_state=random_state,
-            n_init="auto",
-        )
-        labels = clustering.fit_predict(samples, sample_weight=weights)
-        reduced_weights = np.bincount(
-            labels,
-            weights=weights,
-            minlength=num_kernels,
-        )
-        nonempty_clusters = reduced_weights > 0
-        reduced_samples = np.zeros((num_kernels, self.dimension))
-        np.add.at(reduced_samples, labels, samples * weights[:, np.newaxis])
-        reduced_samples[nonempty_clusters] /= reduced_weights[nonempty_clusters, np.newaxis]
+        generator = np.random.default_rng(random_state)
+        positions = (generator.random() + np.arange(num_kernels)) / num_kernels
+        cumulative_weights = np.cumsum(self.weights)
+        cumulative_weights[-1] = 1.0
+        indices = np.searchsorted(cumulative_weights, positions, side="right")
 
         return GaussianKDE(
-            reduced_samples[nonempty_clusters],
-            weights=reduced_weights[nonempty_clusters],
-            bandwidth=float(self.scipy_kde.factor),
+            self.samples[indices],
+            bandwidth=self.bandwidth,
         )
 
     def pdf(self, x: np.ndarray) -> np.ndarray:

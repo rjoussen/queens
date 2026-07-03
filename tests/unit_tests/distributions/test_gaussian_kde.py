@@ -70,17 +70,17 @@ def test_grad_logpdf(distribution):
 
 
 def test_reduce():
-    """Reduce a weighted KDE while retaining its main density features."""
+    """Resample a weighted KDE while retaining its main density features."""
     rng = np.random.default_rng(42)
     samples = np.concatenate([rng.normal(-2.0, 0.7, 600), rng.normal(2.0, 1.0, 400)])
     weights = np.linspace(1.0, 2.0, samples.size)
     distribution = GaussianKDE(samples, weights=weights)
 
-    reduced = distribution.reduce(num_kernels=20, random_state=41)
+    reduced = distribution.reduce(num_kernels=200, random_state=41)
 
-    assert reduced.samples.shape == (20, 1)
-    assert np.sum(reduced.weights) == pytest.approx(1.0)
-    np.testing.assert_allclose(reduced.mean, distribution.mean, atol=1e-12)
+    assert reduced.samples.shape == (200, 1)
+    np.testing.assert_allclose(reduced.weights, np.full(200, 1 / 200))
+    np.testing.assert_allclose(reduced.mean, distribution.mean, atol=0.1)
     grid = np.linspace(-5.0, 5.0, 101)
     relative_l1_error = np.trapezoid(np.abs(reduced.pdf(grid) - distribution.pdf(grid)), grid)
     assert relative_l1_error < 0.15
