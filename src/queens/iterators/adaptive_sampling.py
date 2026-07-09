@@ -25,14 +25,13 @@ from jax import jit
 
 from queens.iterators._iterator import Iterator
 from queens.iterators.sequential_monte_carlo_chopin import SequentialMonteCarloChopin
-from queens.utils.io import load_result
-
 from queens.models.likelihoods.gaussian import Gaussian
-
+from queens.utils.io import load_result
 from queens.visualization.adaptive_sampling_visualization import AdaptiveSamplingVisualization
 
 _logger = logging.getLogger(__name__)
 jax.config.update("jax_enable_x64", True)
+
 
 class AdaptiveSampling(Iterator):
     """Adaptive sampling iterator.
@@ -104,7 +103,7 @@ class AdaptiveSampling(Iterator):
         self.visualization = visualization
 
         if visualization is not None:
-            visualization.prepare(plotting_dir=self.global_settings.output_dir / "plots")
+            visualization.prepare()
 
     def pre_run(self):
         """Pre run."""
@@ -120,7 +119,13 @@ class AdaptiveSampling(Iterator):
     def core_run(self):
         """Core run."""
         for i in range(self.num_steps):
-            _logger.info(f"\n{80*'*'}\nAdaptive sampling step: {i + 1} / {self.num_steps}\n{80*'*'}\n")
+            _logger.info(
+                "\n%s\nAdaptive sampling step: %i / %i\n%s\n",
+                80 * "*",
+                i + 1,
+                self.num_steps,
+                80 * "*",
+            )
             self.x_train = np.concatenate([self.x_train, self.x_train_new], axis=0)
             self.y_train = self.eval_log_likelihood().reshape(-1, 1)
             _logger.info("Total number of successful solver evaluations: %i", self.x_train.shape[0])
@@ -155,7 +160,12 @@ class AdaptiveSampling(Iterator):
             cs_div = self.write_results(particles, weights, log_posterior, i)
             if self.visualization is not None:
                 results = load_result(self.global_settings.result_file(".pickle"))
-                self.visualization.plot(results, i, self.parameters)
+                self.visualization.plot(
+                    results,
+                    i,
+                    self.parameters,
+                    plotting_dir=self.global_settings.output_dir / "plots",
+                )
 
             if cs_div < self.cs_div_criterion:
                 _logger.info(

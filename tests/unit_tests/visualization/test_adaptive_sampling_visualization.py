@@ -14,6 +14,8 @@
 #
 """Unit tests for adaptive sampling visualization."""
 
+# pylint: disable=protected-access
+
 import matplotlib.pyplot as plt
 import numpy as np
 import pytest
@@ -53,7 +55,9 @@ def _adaptive_sampling_results(dimension):
     return {
         "x_train": [x_train],
         "x_train_failed": [np.empty((0, dimension))],
-        "model_outputs": [np.arange(x_train.shape[0] * 2, dtype=float).reshape(x_train.shape[0], 2)],
+        "model_outputs": [
+            np.arange(x_train.shape[0] * 2, dtype=float).reshape(x_train.shape[0], 2)
+        ],
         "model_outputs_failed": [np.empty((0, 2))],
         "y_train": [y_train],
         "x_train_new": [generator.normal(size=(3, dimension))],
@@ -72,30 +76,30 @@ def test_plot_marginal_posterior_grid_saves_2d_plot(tmp_path, parameters_2d):
         kde_num_points=20,
         contour_levels=4,
     )
-    visualization.prepare(tmp_path)
+    visualization.prepare()
 
-    visualization.plot(results, iteration=0, parameters=parameters_2d)
+    visualization.plot(results, iteration=0, parameters=parameters_2d, plotting_dir=tmp_path)
 
     assert (tmp_path / "adaptive_sampling_iteration_0.png").is_file()
 
 
 def test_plot_saves_pair_grid_for_three_scalar_parameters(tmp_path, parameters_3d):
-    """Test that three scalar parameters are shown with the marginal posterior pair grid."""
+    """Test the marginal posterior pair grid for three scalar parameters."""
     results = _adaptive_sampling_results(dimension=3)
     visualization = AdaptiveSamplingVisualization(
         kde_grid_size=8,
         kde_num_points=20,
         contour_levels=4,
     )
-    visualization.prepare(tmp_path)
+    visualization.prepare()
 
-    visualization.plot(results, iteration=0, parameters=parameters_3d)
+    visualization.plot(results, iteration=0, parameters=parameters_3d, plotting_dir=tmp_path)
 
     assert (tmp_path / "adaptive_sampling_iteration_0.png").is_file()
 
 
 def test_plot_marginal_posterior_grid_draws_posterior_on_both_triangles(parameters_2d):
-    """Test that off-diagonal plots include the bivariate posterior on both triangles."""
+    """Test that off-diagonal plots include the posterior on both triangles."""
     results = _adaptive_sampling_results(dimension=2)
     visualization = AdaptiveSamplingVisualization(
         kde_grid_size=8,
@@ -114,7 +118,7 @@ def test_plot_marginal_posterior_grid_draws_posterior_on_both_triangles(paramete
 
 
 def test_multidimensional_parameter_is_plotted_without_prior():
-    """Test that vector components are plotted without unsupported prior marginals."""
+    """Test that vector components are plotted without prior marginals."""
     parameters = Parameters(x=Normal(mean=[0.0, 1.0], covariance=np.eye(2)))
     results = _adaptive_sampling_results(dimension=2)
     visualization = AdaptiveSamplingVisualization(kde_grid_size=8, contour_levels=4)
@@ -125,8 +129,7 @@ def test_multidimensional_parameter_is_plotted_without_prior():
 
     assert parameters.parameters_keys == ["x_0", "x_1"]
     assert all(
-        "Prior Density" not in axes.get_legend_handles_labels()[1]
-        for axes in pair_grid.figure.axes
+        "Prior Density" not in axes.get_legend_handles_labels()[1] for axes in pair_grid.figure.axes
     )
     plt.close(pair_grid.figure)
 
@@ -146,25 +149,22 @@ def test_pair_grid_axes_keep_parameter_bounds_for_different_scales():
         results, iteration=0, parameters=parameters
     )
 
-    assert pair_grid.axes[1, 0].get_ylim() == pytest.approx(
-        visualization.plot_bounds["x_1"]
-    )
-    assert pair_grid.axes[0, 1].get_xlim() == pytest.approx(
-        visualization.plot_bounds["x_1"]
-    )
+    assert pair_grid.axes[1, 0].get_ylim() == pytest.approx(visualization.plot_bounds["x_1"])
+    assert pair_grid.axes[0, 1].get_xlim() == pytest.approx(visualization.plot_bounds["x_1"])
     plt.close(pair_grid.figure)
 
 
-def test_adaptive_sampling_prepare_uses_agg_backend(tmp_path, parameters_2d, mocker):
+def test_adaptive_sampling_prepare_uses_agg_backend(mocker):
     """Test that adaptive-sampling plotting avoids GUI backends."""
     switch_backend = mocker.patch(
         "queens.visualization.adaptive_sampling_visualization.plt.switch_backend"
     )
     visualization = AdaptiveSamplingVisualization()
 
-    visualization.prepare(tmp_path)
+    visualization.prepare()
 
     switch_backend.assert_called_once_with("Agg")
+    assert not hasattr(visualization, "plotting_dir")
 
 
 def test_map_estimate_is_drawn_on_diag_and_lower_triangle(parameters_2d):
@@ -189,8 +189,8 @@ def test_map_estimate_is_drawn_on_diag_and_lower_triangle(parameters_2d):
     plt.close(pair_grid.figure)
 
 
-def test_get_map_sample_uses_particle_log_posterior(parameters_2d):
-    """Test MAP sample is chosen from the particle with highest log posterior."""
+def test_get_map_sample_uses_particle_log_posterior():
+    """Test MAP selection from particle log posteriors."""
     results = _adaptive_sampling_results(dimension=2)
     results["particles"][0] = np.array([[2.8, 2.8], [0.0, 0.0]])
     results["log_posterior"][0] = np.array([-3.0, -0.2])

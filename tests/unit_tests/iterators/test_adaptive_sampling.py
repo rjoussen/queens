@@ -143,8 +143,10 @@ def test_filter_failed_evaluations_multiple_calls(adaptive_sampling_iterator):
     )
 
 
-def test_eval_log_likelihood_updates_covariance_with_new_outputs_for_map(adaptive_sampling_iterator):
-    """Test MAP covariance updates receive all filtered forward-model outputs."""
+def test_eval_log_likelihood_updates_covariance_with_new_outputs_for_map(
+    adaptive_sampling_iterator,
+):
+    """Test MAP covariance updates receive all filtered model outputs."""
     adaptive_sampling_iterator.x_train = np.array([[0.1, 0.2], [0.3, 0.4]])
     adaptive_sampling_iterator.x_train_new = np.array([[0.3, 0.4]])
     adaptive_sampling_iterator.model_outputs = np.array([[1.0, 2.0, 3.0]])
@@ -168,7 +170,7 @@ def test_eval_log_likelihood_updates_covariance_with_new_outputs_for_map(adaptiv
 def test_eval_log_likelihood_updates_covariance_with_all_outputs_for_best_fit(
     adaptive_sampling_iterator,
 ):
-    """Test best-fit adaptive covariance updates receive all filtered outputs."""
+    """Test best-fit covariance updates receive all filtered outputs."""
     adaptive_sampling_iterator.x_train = np.array([[0.1, 0.2], [0.3, 0.4]])
     adaptive_sampling_iterator.x_train_new = np.array([[0.3, 0.4]])
     adaptive_sampling_iterator.model_outputs = np.array([[1.0, 2.0, 3.0]])
@@ -234,5 +236,8 @@ def test_core_run_calls_visualization_plot(adaptive_sampling_iterator, mocker):
     adaptive_sampling_iterator.core_run()
 
     adaptive_sampling_iterator.visualization.plot.assert_called_once_with(
-        {"dummy": "value"}, 0, adaptive_sampling_iterator.parameters
+        {"dummy": "value"},
+        0,
+        adaptive_sampling_iterator.parameters,
+        plotting_dir=adaptive_sampling_iterator.global_settings.output_dir / "plots",
     )
