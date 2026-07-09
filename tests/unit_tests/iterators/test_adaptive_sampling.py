@@ -233,4 +233,6 @@ def test_core_run_calls_visualization_plot(adaptive_sampling_iterator, mocker):
 
     adaptive_sampling_iterator.core_run()
 
-    adaptive_sampling_iterator.visualization.plot.assert_called_once_with({"dummy": "value"}, 0)
+    adaptive_sampling_iterator.visualization.plot.assert_called_once_with(
+        {"dummy": "value"}, 0, adaptive_sampling_iterator.parameters
+    )
