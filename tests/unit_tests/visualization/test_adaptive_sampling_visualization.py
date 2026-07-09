@@ -180,19 +180,43 @@ def test_map_estimate_is_drawn_on_diag_and_lower_triangle(parameters_2d):
 
     lower_collections = pair_grid.axes[1, 0].collections
     assert any(
-        getattr(collection, "get_label", lambda: "")().startswith("MAP estimate")
+        getattr(collection, "get_label", lambda: "")().startswith("Surrogate MAP estimate")
         for collection in lower_collections
     )
+    legend_labels = [text.get_text() for text in pair_grid.figure.legends[0].get_texts()]
+    assert "Surrogate MAP estimate" in legend_labels
+    assert all("\n" not in label for label in legend_labels)
+    map_text = next(
+        text.get_text()
+        for text in pair_grid.figure.texts
+        if text.get_text().startswith("Surrogate MAP estimate:")
+    )
+    assert "Evaluated MAP estimate (training sample" in map_text
+    assert "Model output=" in map_text
     plt.close(pair_grid.figure)
 
 
-def test_get_map_sample_uses_particle_log_posterior():
+def test_get_surrogate_map_estimate_uses_particle_log_posterior():
     """Test MAP selection from particle log posteriors."""
     results = _adaptive_sampling_results(dimension=2)
     results["particles"][0] = np.array([[2.8, 2.8], [0.0, 0.0]])
     results["log_posterior"][0] = np.array([-3.0, -0.2])
-    visualization = AdaptiveSamplingVisualization(plot_map_estimate=True)
 
-    map_sample = visualization._get_map_sample(results, 0)
+    map_estimate = AdaptiveSamplingVisualization._get_surrogate_map_estimate(results, 0)
 
-    np.testing.assert_array_equal(map_sample, np.array([0.0, 0.0]))
+    np.testing.assert_array_equal(map_estimate.sample, np.array([0.0, 0.0]))
+
+
+def test_get_training_map_estimate_includes_model_output_and_sample_index(parameters_2d):
+    """Test evaluated MAP metadata."""
+    results = _adaptive_sampling_results(dimension=2)
+    results["y_train"][0] = np.arange(8, dtype=float).reshape(-1, 1)
+    map_estimate = AdaptiveSamplingVisualization._get_training_map_estimate(
+        results,
+        0,
+        parameters_2d,
+    )
+
+    np.testing.assert_array_equal(map_estimate.sample, results["x_train"][0][-1])
+    np.testing.assert_array_equal(map_estimate.model_output, np.array([14.0, 15.0]))
+    assert map_estimate.training_sample_index == 7

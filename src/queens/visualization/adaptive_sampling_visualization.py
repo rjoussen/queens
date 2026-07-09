@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -37,6 +38,15 @@ AdaptiveSamplingResults = Mapping[str, Sequence[Any]]
 Bounds = tuple[float, float]
 
 
+@dataclass
+class MAPEstimate:
+    """Information displayed for a MAP estimate."""
+
+    sample: np.ndarray
+    model_output: np.ndarray | None = None
+    training_sample_index: int | None = None
+
+
 class AdaptiveSamplingVisualization:
     """Plot adaptive sampling posterior diagnostics."""
 
@@ -53,7 +63,7 @@ class AdaptiveSamplingVisualization:
             kde_grid_size (int): Number of grid points per axis for bivariate KDEs.
             kde_num_points (int): Number of support points for univariate KDEs.
             contour_levels (int): Number of contour levels for bivariate KDEs.
-            plot_map_estimate (bool): Whether to highlight the current MAP training sample.
+            plot_map_estimate (bool): Whether to highlight and describe the MAP estimates.
         """
         self.plot_bounds: dict[str, Bounds] = {}
         self.kde_grid_size = kde_grid_size
@@ -90,15 +100,17 @@ class AdaptiveSamplingVisualization:
         parameter_names = parameters.parameters_keys
         self.plot_bounds = self._plot_bounds(results, iteration, parameters)
 
-        map_sample = None
+        surrogate_map = None
+        training_map = None
         if self.plot_map_estimate:
-            map_sample = self._get_map_sample(results, iteration)
+            surrogate_map = self._get_surrogate_map_estimate(results, iteration)
+            training_map = self._get_training_map_estimate(results, iteration, parameters)
 
         pair_grid = sns.PairGrid(data=data_frame, vars=parameter_names, diag_sharey=False)
         pair_grid.figure.set_size_inches(10, 10)
 
         def plot_diag(x: pd.Series, **_kwargs: Any) -> None:
-            self._plot_1d_posterior(x, weights, parameters, map_sample)
+            self._plot_1d_posterior(x, weights, parameters, surrogate_map)
             if self.plot_map_estimate:
                 axes = plt.gca()
                 axes.set_ylim(bottom=0)
@@ -113,7 +125,7 @@ class AdaptiveSamplingVisualization:
 
             def plot_lower(x: pd.Series, y: pd.Series, **_kwargs: Any) -> None:
                 if self.plot_map_estimate:
-                    self._plot_map_estimate_2d(x, y, map_sample, parameters)
+                    self._plot_map_estimate_2d(x, y, surrogate_map, parameters)
 
             pair_grid.map_diag(plot_diag)
             pair_grid.map_offdiag(plot_offdiag)
@@ -127,7 +139,11 @@ class AdaptiveSamplingVisualization:
             fontweight="bold",
         )
         self._format_pair_grid_figure(
-            pair_grid.figure, contours[0] if contours else None, parameters
+            pair_grid.figure,
+            contours[0] if contours else None,
+            parameters,
+            surrogate_map,
+            training_map,
         )
         return pair_grid
 
@@ -156,7 +172,7 @@ class AdaptiveSamplingVisualization:
         x: pd.Series,
         weights: ArrayLike,
         parameters: Parameters,
-        map_sample: np.ndarray | None = None,
+        map_estimate: MAPEstimate | None = None,
         **_kwargs: Any,
     ) -> None:
         """Plot one univariate marginal posterior."""
@@ -184,13 +200,13 @@ class AdaptiveSamplingVisualization:
             prior_density = np.asarray(parameter.pdf(grid)).reshape(-1)
             axes.plot(grid, prior_density, linestyle=":", label="Prior Density")
 
-        if self.plot_map_estimate and map_sample is not None:
+        if self.plot_map_estimate and map_estimate is not None:
             axes.axvline(
-                map_sample[parameters.parameters_keys.index(name)],
+                map_estimate.sample[parameters.parameters_keys.index(name)],
                 color="grey",
                 linestyle="--",
                 linewidth=1.2,
-                label="MAP estimate (univariate)",
+                label="Surrogate MAP estimate",
             )
 
         axes.set_xlim(bounds)
@@ -264,30 +280,51 @@ class AdaptiveSamplingVisualization:
         self,
         x: pd.Series,
         y: pd.Series,
-        map_sample: np.ndarray,
+        map_estimate: MAPEstimate | None,
         parameters: Parameters,
     ) -> None:
-        """Plot the MAP training sample in lower-triangle panels."""
-        if not self.plot_map_estimate or map_sample is None:
+        """Plot a MAP estimate in lower-triangle panels."""
+        if not self.plot_map_estimate or map_estimate is None:
             return
         x_index = parameters.parameters_keys.index(str(x.name))
         y_index = parameters.parameters_keys.index(str(y.name))
         plt.scatter(
-            map_sample[x_index],
-            map_sample[y_index],
+            map_estimate.sample[x_index],
+            map_estimate.sample[y_index],
             marker="o",
             color="white",
             edgecolors="black",
             linewidths=1.2,
             s=45,
-            label=(
-                "MAP estimate\n["
-                + "\n ".join(
-                    f"{name}={map_sample[i]:.3f}"
-                    for i, name in enumerate(parameters.parameters_keys)
-                )
-                + "]"
-            ),
+            label="Surrogate MAP estimate",
+        )
+
+    @staticmethod
+    def _map_estimate_text(
+        surrogate_map: MAPEstimate,
+        training_map: MAPEstimate,
+        parameters: Parameters,
+    ) -> str:
+        """Create text describing surrogate and evaluated MAP estimates."""
+        surrogate_parameters = "\n".join(
+            f"  {name}={surrogate_map.sample[i]:.3f}"
+            for i, name in enumerate(parameters.parameters_keys)
+        )
+        training_parameters = "\n".join(
+            f"  {name}={training_map.sample[i]:.3f}"
+            for i, name in enumerate(parameters.parameters_keys)
+        )
+        model_output = np.array2string(
+            training_map.model_output,
+            precision=3,
+            separator=", ",
+            suppress_small=True,
+        )
+        return (
+            f"Surrogate MAP estimate:\n{surrogate_parameters}\n\n"
+            f"Evaluated MAP estimate (training sample {training_map.training_sample_index}):\n"
+            f"{training_parameters}\n"
+            f"  Model output={model_output}"
         )
 
     def _format_pair_grid_figure(
@@ -295,8 +332,19 @@ class AdaptiveSamplingVisualization:
         figure: Figure,
         contour: QuadContourSet | None,
         parameters: Parameters,
+        surrogate_map: MAPEstimate | None,
+        training_map: MAPEstimate | None,
     ) -> None:
         """Add figure-level legend and colorbar."""
+        if surrogate_map is not None and training_map is not None:
+            figure.text(
+                1.02,
+                0.98,
+                self._map_estimate_text(surrogate_map, training_map, parameters),
+                ha="left",
+                va="top",
+                bbox={"facecolor": "white", "alpha": 0.8, "edgecolor": "black"},
+            )
         legend = self._draw_legend_without_duplicates(
             figure,
             loc="center left",
@@ -402,11 +450,33 @@ class AdaptiveSamplingVisualization:
             colorbar.set_ticks([contour.levels[0], contour.levels[-1]])
             colorbar.set_ticklabels(["Low", "High"])
 
-    def _get_map_sample(self, results: AdaptiveSamplingResults, iteration: int) -> np.ndarray:
-        """Return the MAP training sample."""
+    @staticmethod
+    def _get_surrogate_map_estimate(
+        results: AdaptiveSamplingResults,
+        iteration: int,
+    ) -> MAPEstimate:
+        """Return the MAP estimate from surrogate posterior particles."""
         log_posterior = np.asarray(results["log_posterior"][iteration], dtype=float)
+        map_index = int(np.argmax(log_posterior))
+        sample = np.asarray(results["particles"][iteration][map_index], dtype=float)
+        return MAPEstimate(sample=sample)
 
-        map_index = np.argmax(log_posterior)
-        map_sample = np.asarray(results["particles"][iteration][map_index], dtype=float)
-
-        return map_sample
+    @staticmethod
+    def _get_training_map_estimate(
+        results: AdaptiveSamplingResults,
+        iteration: int,
+        parameters: Parameters,
+    ) -> MAPEstimate:
+        """Return the MAP estimate among evaluated training samples."""
+        x_train = np.asarray(results["x_train"][iteration], dtype=float)
+        log_likelihood = np.asarray(results["y_train"][iteration], dtype=float).reshape(-1)
+        if x_train.shape[0] != log_likelihood.size:
+            raise ValueError("Training samples and log-likelihood values do not match.")
+        log_posterior = log_likelihood + parameters.joint_logpdf(x_train)
+        map_index = int(np.argmax(log_posterior))
+        model_output = np.asarray(results["model_outputs"][iteration][map_index], dtype=float)
+        return MAPEstimate(
+            sample=x_train[map_index],
+            model_output=model_output,
+            training_sample_index=map_index,
+        )
