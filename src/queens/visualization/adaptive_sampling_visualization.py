@@ -40,11 +40,28 @@ Bounds = tuple[float, float]
 
 @dataclass
 class MAPEstimate:
-    """Information displayed for a MAP estimate."""
+    """Posterior MAP estimate."""
 
     sample: np.ndarray
-    model_output: np.ndarray | None = None
-    training_sample_index: int | None = None
+
+
+@dataclass
+class EvaluatedSample:
+    """Highest-likelihood sample among evaluated training points."""
+
+    sample: np.ndarray
+    model_output: np.ndarray
+    training_sample_index: int
+
+
+@dataclass
+class PosteriorSummary:
+    """Weighted summary statistics of posterior particles."""
+
+    mean: np.ndarray
+    median: np.ndarray
+    credible_interval_lower: np.ndarray
+    credible_interval_upper: np.ndarray
 
 
 class AdaptiveSamplingVisualization:
@@ -84,11 +101,19 @@ class AdaptiveSamplingVisualization:
         pair_grid = self._plot_marginal_posterior_grid(results, iteration, parameters)
 
         pair_grid.figure.savefig(
-            plotting_dir / f"adaptive_sampling_iteration_{iteration}.svg",
+            plotting_dir / f"adaptive_sampling_iteration_{iteration}_posterior.svg",
             dpi=300,
             bbox_inches="tight",
         )
-        plt.close()
+        plt.close(pair_grid.figure)
+
+        evolution_figure = self._plot_parameter_evolution(results, iteration, parameters)
+        evolution_figure.savefig(
+            plotting_dir / f"adaptive_sampling_iteration_{iteration}_parameter_evolution.svg",
+            dpi=300,
+            bbox_inches="tight",
+        )
+        plt.close(evolution_figure)
 
     def _plot_marginal_posterior_grid(
         self, results: AdaptiveSamplingResults, iteration: int, parameters: Parameters
@@ -99,21 +124,36 @@ class AdaptiveSamplingVisualization:
         contours: list[QuadContourSet] = []
         parameter_names = parameters.parameters_keys
         self.plot_bounds = self._plot_bounds(results, iteration, parameters)
+        posterior_summary = self._posterior_summary(
+            data_frame[parameter_names].to_numpy(),
+            weights,
+        )
 
-        surrogate_map = None
-        training_map = None
+        map_estimate = None
+        most_likely_evaluated_sample = None
         if self.plot_map_estimate:
-            surrogate_map = self._get_surrogate_map_estimate(results, iteration)
-            training_map = self._get_training_map_estimate(results, iteration, parameters)
+            map_estimate = self._get_map_estimate(results, iteration)
+            most_likely_evaluated_sample = self._get_most_likely_evaluated_sample(
+                results, iteration
+            )
 
         pair_grid = sns.PairGrid(data=data_frame, vars=parameter_names, diag_sharey=False)
         pair_grid.figure.set_size_inches(10, 10)
 
         def plot_diag(x: pd.Series, **_kwargs: Any) -> None:
-            self._plot_1d_posterior(x, weights, parameters, surrogate_map)
+            self._plot_1d_posterior(
+                x,
+                weights,
+                parameters,
+                posterior_summary,
+                map_estimate,
+                most_likely_evaluated_sample,
+            )
             if self.plot_map_estimate:
                 axes = plt.gca()
                 axes.set_ylim(bottom=0)
+
+        pair_grid.map_diag(plot_diag)
 
         if len(parameter_names) > 1:
 
@@ -123,14 +163,8 @@ class AdaptiveSamplingVisualization:
             def plot_upper(x: pd.Series, y: pd.Series, **_kwargs: Any) -> None:
                 self._plot_training_samples(x, y, results, iteration, parameters)
 
-            def plot_lower(x: pd.Series, y: pd.Series, **_kwargs: Any) -> None:
-                if self.plot_map_estimate:
-                    self._plot_map_estimate_2d(x, y, surrogate_map, parameters)
-
-            pair_grid.map_diag(plot_diag)
             pair_grid.map_offdiag(plot_offdiag)
             pair_grid.map_upper(plot_upper)
-            pair_grid.map_lower(plot_lower)
 
         pair_grid.figure.suptitle(
             f"Marginal posterior distributions - iteration {iteration}",
@@ -142,8 +176,8 @@ class AdaptiveSamplingVisualization:
             pair_grid.figure,
             contours[0] if contours else None,
             parameters,
-            surrogate_map,
-            training_map,
+            most_likely_evaluated_sample,
+            pair_grid.diag_axes,
         )
         return pair_grid
 
@@ -172,7 +206,9 @@ class AdaptiveSamplingVisualization:
         x: pd.Series,
         weights: ArrayLike,
         parameters: Parameters,
+        posterior_summary: PosteriorSummary,
         map_estimate: MAPEstimate | None = None,
+        most_likely_evaluated_sample: EvaluatedSample | None = None,
         **_kwargs: Any,
     ) -> None:
         """Plot one univariate marginal posterior."""
@@ -198,15 +234,33 @@ class AdaptiveSamplingVisualization:
         parameter = parameters.dict.get(name)
         if parameter is not None and parameter.dimension == 1:
             prior_density = np.asarray(parameter.pdf(grid)).reshape(-1)
-            axes.plot(grid, prior_density, linestyle=":", label="Prior Density")
+            axes.plot(grid, prior_density, linestyle="-", label="Prior Density")
+
+        parameter_index = parameters.parameters_keys.index(name)
+        axes.axvspan(
+            posterior_summary.credible_interval_lower[parameter_index],
+            posterior_summary.credible_interval_upper[parameter_index],
+            color="tab:blue",
+            alpha=0.12,
+            label="95% credible interval",
+        )
 
         if self.plot_map_estimate and map_estimate is not None:
             axes.axvline(
-                map_estimate.sample[parameters.parameters_keys.index(name)],
-                color="grey",
+                map_estimate.sample[parameter_index],
+                color="tab:green",
                 linestyle="--",
-                linewidth=1.2,
-                label="Surrogate MAP estimate",
+                linewidth=1,
+                label="MAP estimate",
+            )
+
+        if most_likely_evaluated_sample is not None:
+            axes.axvline(
+                most_likely_evaluated_sample.sample[parameter_index],
+                color="tab:purple",
+                linestyle="-.",
+                linewidth=1,
+                label="Most likely evaluated sample",
             )
 
         axes.set_xlim(bounds)
@@ -276,77 +330,200 @@ class AdaptiveSamplingVisualization:
             s=20,
         )
 
-    def _plot_map_estimate_2d(
-        self,
-        x: pd.Series,
-        y: pd.Series,
-        map_estimate: MAPEstimate | None,
-        parameters: Parameters,
-    ) -> None:
-        """Plot a MAP estimate in lower-triangle panels."""
-        if not self.plot_map_estimate or map_estimate is None:
-            return
-        x_index = parameters.parameters_keys.index(str(x.name))
-        y_index = parameters.parameters_keys.index(str(y.name))
-        plt.scatter(
-            map_estimate.sample[x_index],
-            map_estimate.sample[y_index],
-            marker="o",
-            color="white",
-            edgecolors="black",
-            linewidths=1.2,
-            s=45,
-            label="Surrogate MAP estimate",
-        )
-
     @staticmethod
-    def _map_estimate_text(
-        surrogate_map: MAPEstimate,
-        training_map: MAPEstimate,
+    def _evaluated_sample_text(
+        most_likely_evaluated_sample: EvaluatedSample,
         parameters: Parameters,
     ) -> str:
-        """Create text describing surrogate and evaluated MAP estimates."""
-        surrogate_parameters = "\n".join(
-            f"  {name}={surrogate_map.sample[i]:.3f}"
-            for i, name in enumerate(parameters.parameters_keys)
-        )
-        training_parameters = "\n".join(
-            f"  {name}={training_map.sample[i]:.3f}"
+        """Describe the highest-likelihood evaluated training sample."""
+        evaluated_parameters = "\n".join(
+            f"  {name}={most_likely_evaluated_sample.sample[i]:.3f}"
             for i, name in enumerate(parameters.parameters_keys)
         )
         model_output = np.array2string(
-            training_map.model_output,
+            most_likely_evaluated_sample.model_output,
             precision=3,
             separator=", ",
-            suppress_small=True,
+            suppress_small=False,
         )
         return (
-            f"Surrogate MAP estimate:\n{surrogate_parameters}\n\n"
-            f"Evaluated MAP estimate (training sample {training_map.training_sample_index}):\n"
-            f"{training_parameters}\n"
-            f"  Model output={model_output}"
+            rf"$\bf{{Most\ likely\ evaluated\ sample}}$"
+            f"\n  Training sample ID: {most_likely_evaluated_sample.training_sample_index}\n"
+            f"  Model output = {model_output}\n"
+            f"{evaluated_parameters}"
         )
+
+    @classmethod
+    def _posterior_summary(
+        cls,
+        particles: ArrayLike,
+        weights: ArrayLike,
+        credible_interval: tuple[float, float] = (0.025, 0.975),
+    ) -> PosteriorSummary:
+        """Calculate weighted posterior summary statistics."""
+        particles = np.asarray(particles, dtype=float)
+        if particles.ndim == 1:
+            particles = particles.reshape(-1, 1)
+        normalized_weights = cls._normalized_weights(weights, particles.shape[0])
+        quantiles = cls._weighted_quantiles(
+            particles,
+            normalized_weights,
+            np.array([credible_interval[0], 0.5, credible_interval[1]]),
+        )
+        return PosteriorSummary(
+            mean=np.average(particles, axis=0, weights=normalized_weights),
+            median=quantiles[1],
+            credible_interval_lower=quantiles[0],
+            credible_interval_upper=quantiles[2],
+        )
+
+    @staticmethod
+    def _normalized_weights(weights: ArrayLike, num_particles: int) -> np.ndarray:
+        """Validate and normalize particle weights."""
+        weights = np.asarray(weights, dtype=float).reshape(-1)
+        if weights.size != num_particles:
+            raise ValueError("Number of weights does not match the number of particles.")
+        if not np.all(np.isfinite(weights)) or np.any(weights < 0):
+            raise ValueError("Particle weights must be finite and non-negative.")
+        weight_sum = np.sum(weights)
+        if weight_sum <= 0:
+            raise ValueError("Particle weights must have a positive sum.")
+        return weights / weight_sum
+
+    @staticmethod
+    def _weighted_quantiles(
+        values: np.ndarray,
+        normalized_weights: np.ndarray,
+        probabilities: np.ndarray,
+    ) -> np.ndarray:
+        """Calculate weighted quantiles for each column of a sample matrix."""
+        quantiles = np.empty((probabilities.size, values.shape[1]))
+        for dimension in range(values.shape[1]):
+            order = np.argsort(values[:, dimension])
+            sorted_values = values[order, dimension]
+            sorted_weights = normalized_weights[order]
+            cumulative_weights = np.cumsum(sorted_weights)
+            quantiles[:, dimension] = np.interp(
+                probabilities,
+                cumulative_weights,
+                sorted_values,
+                left=sorted_values[0],
+                right=sorted_values[-1],
+            )
+        return quantiles
+
+    def _plot_parameter_evolution(
+        self,
+        results: AdaptiveSamplingResults,
+        iteration: int,
+        parameters: Parameters,
+    ) -> Figure:
+        """Plot posterior statistics by iteration."""
+        summaries = [
+            self._posterior_summary(results["particles"][i], results["weights"][i])
+            for i in range(iteration + 1)
+        ]
+        means = np.vstack([summary.mean for summary in summaries])
+        medians = np.vstack([summary.median for summary in summaries])
+        lower = np.vstack([summary.credible_interval_lower for summary in summaries])
+        upper = np.vstack([summary.credible_interval_upper for summary in summaries])
+        iterations = np.arange(iteration + 1)
+        map_estimates = None
+        most_likely_evaluated_samples = None
+        if self.plot_map_estimate:
+            map_estimates = np.vstack(
+                [self._get_map_estimate(results, i).sample for i in iterations]
+            )
+            most_likely_evaluated_samples = np.vstack(
+                [self._get_most_likely_evaluated_sample(results, i).sample for i in iterations]
+            )
+
+        figure, axes = plt.subplots(
+            parameters.num_parameters,
+            1,
+            figsize=(9, max(3.2, 2.4 * parameters.num_parameters)),
+            sharex=True,
+            squeeze=False,
+        )
+        for parameter_index, (axes_row, parameter_name) in enumerate(
+            zip(axes, parameters.parameters_keys)
+        ):
+            parameter_axes = axes_row[0]
+            parameter_axes.fill_between(
+                iterations,
+                lower[:, parameter_index],
+                upper[:, parameter_index],
+                color="tab:blue",
+                alpha=0.18,
+                label="95% credible interval",
+            )
+            parameter_axes.plot(
+                iterations,
+                means[:, parameter_index],
+                color="tab:green",
+                marker="o",
+                label="Posterior mean",
+            )
+            parameter_axes.plot(
+                iterations,
+                medians[:, parameter_index],
+                color="tab:orange",
+                linestyle="-.",
+                marker=".",
+                label="Posterior median",
+            )
+            if map_estimates is not None and most_likely_evaluated_samples is not None:
+                parameter_axes.plot(
+                    iterations,
+                    map_estimates[:, parameter_index],
+                    color="grey",
+                    linestyle="--",
+                    marker="x",
+                    label="MAP estimate",
+                )
+                parameter_axes.plot(
+                    iterations,
+                    most_likely_evaluated_samples[:, parameter_index],
+                    color="tab:purple",
+                    linestyle=":",
+                    marker="s",
+                    label="Most likely evaluated sample",
+                )
+            parameter_axes.set_ylabel(parameter_name)
+            parameter_axes.grid(alpha=0.25)
+
+        axes[-1, 0].set_xlabel("Adaptive iteration")
+        axes[-1, 0].set_xticks(iterations)
+        figure.suptitle("Posterior parameter evolution", fontsize=14, fontweight="bold")
+        handles, labels = axes[0, 0].get_legend_handles_labels()
+        figure.legend(handles, labels, loc="upper right")
+        figure.tight_layout(rect=(0, 0, 1, 0.96))
+        return figure
 
     def _format_pair_grid_figure(
         self,
         figure: Figure,
         contour: QuadContourSet | None,
         parameters: Parameters,
-        surrogate_map: MAPEstimate | None,
-        training_map: MAPEstimate | None,
+        most_likely_evaluated_sample: EvaluatedSample | None,
+        diagonal_axes: Sequence[Any],
     ) -> None:
         """Add figure-level legend and colorbar."""
-        if surrogate_map is not None and training_map is not None:
+        if most_likely_evaluated_sample is not None:
             figure.text(
                 1.02,
                 0.98,
-                self._map_estimate_text(surrogate_map, training_map, parameters),
+                self._evaluated_sample_text(
+                    most_likely_evaluated_sample,
+                    parameters,
+                ),
                 ha="left",
                 va="top",
                 bbox={"facecolor": "white", "alpha": 0.8, "edgecolor": "black"},
             )
         legend = self._draw_legend_without_duplicates(
             figure,
+            additional_axes=diagonal_axes,
             loc="center left",
             bbox_to_anchor=(1.0, 0.5),
         )
@@ -404,10 +581,14 @@ class AdaptiveSamplingVisualization:
         )
 
     @staticmethod
-    def _draw_legend_without_duplicates(figure: Figure, **legend_kwargs: Any) -> Any:
+    def _draw_legend_without_duplicates(
+        figure: Figure,
+        additional_axes: Sequence[Any] = (),
+        **legend_kwargs: Any,
+    ) -> Any:
         """Draw a single figure-level legend without duplicate labels."""
         handles, labels = [], []
-        for axes in figure.axes:
+        for axes in [*figure.axes, *additional_axes]:
             axes_handles, axes_labels = axes.get_legend_handles_labels()
             handles.extend(axes_handles)
             labels.extend(axes_labels)
@@ -451,32 +632,30 @@ class AdaptiveSamplingVisualization:
             colorbar.set_ticklabels(["Low", "High"])
 
     @staticmethod
-    def _get_surrogate_map_estimate(
+    def _get_map_estimate(
         results: AdaptiveSamplingResults,
         iteration: int,
     ) -> MAPEstimate:
-        """Return the MAP estimate from surrogate posterior particles."""
+        """Return the MAP estimate from posterior particles."""
         log_posterior = np.asarray(results["log_posterior"][iteration], dtype=float)
         map_index = int(np.argmax(log_posterior))
         sample = np.asarray(results["particles"][iteration][map_index], dtype=float)
         return MAPEstimate(sample=sample)
 
     @staticmethod
-    def _get_training_map_estimate(
+    def _get_most_likely_evaluated_sample(
         results: AdaptiveSamplingResults,
         iteration: int,
-        parameters: Parameters,
-    ) -> MAPEstimate:
-        """Return the MAP estimate among evaluated training samples."""
+    ) -> EvaluatedSample:
+        """Return the evaluated sample with the highest log likelihood."""
         x_train = np.asarray(results["x_train"][iteration], dtype=float)
         log_likelihood = np.asarray(results["y_train"][iteration], dtype=float).reshape(-1)
         if x_train.shape[0] != log_likelihood.size:
             raise ValueError("Training samples and log-likelihood values do not match.")
-        log_posterior = log_likelihood + parameters.joint_logpdf(x_train)
-        map_index = int(np.argmax(log_posterior))
-        model_output = np.asarray(results["model_outputs"][iteration][map_index], dtype=float)
-        return MAPEstimate(
-            sample=x_train[map_index],
+        sample_index = int(np.argmax(log_likelihood))
+        model_output = np.asarray(results["model_outputs"][iteration][sample_index], dtype=float)
+        return EvaluatedSample(
+            sample=x_train[sample_index],
             model_output=model_output,
-            training_sample_index=map_index,
+            training_sample_index=sample_index,
         )
