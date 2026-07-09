@@ -179,6 +179,42 @@ def test_update_covariance(my_lik_model):
     np.testing.assert_array_equal(my_lik_model.noise_var_iterative_averaging.cov, expected_cov)
 
 
+def test_has_dynamic_noise(my_lik_model):
+    """Test dynamic noise detection."""
+    my_lik_model.noise_type = "MAP_abc"
+    assert my_lik_model.has_dynamic_noise()
+
+    my_lik_model.noise_type = "best_fit_adaptive_variance"
+    assert my_lik_model.has_dynamic_noise()
+    assert my_lik_model.requires_covariance_history()
+
+    my_lik_model.noise_type = "fixed_variance"
+    assert not my_lik_model.has_dynamic_noise()
+    assert not my_lik_model.requires_covariance_history()
+
+
+def test_update_covariance_empty_input_is_noop(my_lik_model):
+    """Test empty covariance updates are ignored."""
+    my_lik_model.noise_type = "best_fit_adaptive_variance"
+    my_lik_model.sigma_current = np.array([1.0])
+    my_lik_model.normal_distribution.cov = "unchanged"
+
+    my_lik_model.update_covariance(np.empty((0, 1)))
+
+    assert my_lik_model.normal_distribution.cov == "unchanged"
+
+
+def test_update_covariance_best_fit_variance(my_lik_model):
+    """Test best-fit adaptive variance update."""
+    my_lik_model.noise_type = "best_fit_adaptive_variance"
+    my_lik_model.sigma_factor = 1.0
+    my_lik_model.sigma_current = np.array([2.0])
+
+    my_lik_model.update_covariance(np.array([[2.0], [2.5]]))
+
+    np.testing.assert_array_equal(my_lik_model.normal_distribution.cov, np.array([[0.25]]))
+
+
 def test_grad(my_lik_model):
     """Test grad method."""
     samples = np.array([[1.0, 2.0], [2.0, 3.0]])
