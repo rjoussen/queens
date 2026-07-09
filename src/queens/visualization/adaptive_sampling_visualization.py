@@ -61,12 +61,6 @@ class AdaptiveSamplingVisualization:
         self.contour_levels = contour_levels
         self.plot_map_estimate = plot_map_estimate
 
-    def prepare(self) -> None:
-        """Prepare the visualization environment."""
-        plt.switch_backend(
-            "Agg"
-        )  # prevent GUI backends from being used in adaptive-sampling plotting
-
     def plot(
         self,
         results: AdaptiveSamplingResults,
@@ -75,6 +69,7 @@ class AdaptiveSamplingVisualization:
         plotting_dir: Path,
     ) -> None:
         """Plot adaptive sampling posterior diagnostics for one iteration."""
+        plt.switch_backend("Agg")
         plotting_dir.mkdir(parents=True, exist_ok=True)
         pair_grid = self._plot_marginal_posterior_grid(results, iteration, parameters)
 
