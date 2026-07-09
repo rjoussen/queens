@@ -37,7 +37,10 @@ def fixture_adaptive_sampling_iterator(global_settings, default_parameters_unifo
     likelihood_model = Mock()
     likelihood_model.y_obs = np.array([1.0, 2.0, 3.0])
     likelihood_model.has_dynamic_noise.return_value = False
-    likelihood_model.requires_covariance_history.return_value = False
+    likelihood_model.BEST_FIT_NOISE_TYPES = (
+        "best_fit_adaptive_variance",
+        "best_fit_adaptive_variance_vector",
+    )
 
     # Mock solving iterator
     solving_iterator = Mock()
@@ -140,8 +143,8 @@ def test_filter_failed_evaluations_multiple_calls(adaptive_sampling_iterator):
     )
 
 
-def test_eval_log_likelihood_uses_history_only_when_requested(adaptive_sampling_iterator):
-    """Test covariance updates use history only for history-based noise models."""
+def test_eval_log_likelihood_updates_covariance_with_new_outputs_for_map(adaptive_sampling_iterator):
+    """Test MAP covariance updates receive all filtered forward-model outputs."""
     adaptive_sampling_iterator.x_train = np.array([[0.1, 0.2], [0.3, 0.4]])
     adaptive_sampling_iterator.x_train_new = np.array([[0.3, 0.4]])
     adaptive_sampling_iterator.model_outputs = np.array([[1.0, 2.0, 3.0]])
@@ -153,25 +156,66 @@ def test_eval_log_likelihood_uses_history_only_when_requested(adaptive_sampling_
     )
     adaptive_sampling_iterator.likelihood_model.normal_distribution.logpdf_const = 0.0
     adaptive_sampling_iterator.likelihood_model.has_dynamic_noise.return_value = True
+    adaptive_sampling_iterator.likelihood_model.noise_type = "MAP_jeffrey_variance"
 
-    adaptive_sampling_iterator.likelihood_model.requires_covariance_history.return_value = False
     adaptive_sampling_iterator.eval_log_likelihood()
+    np.testing.assert_array_equal(
+        adaptive_sampling_iterator.likelihood_model.update_covariance.call_args.args[0],
+        np.array([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]]),
+    )
+
+
+def test_eval_log_likelihood_updates_covariance_with_all_outputs_for_best_fit(
+    adaptive_sampling_iterator,
+):
+    """Test best-fit adaptive covariance updates receive all filtered outputs."""
+    adaptive_sampling_iterator.x_train = np.array([[0.1, 0.2], [0.3, 0.4]])
+    adaptive_sampling_iterator.x_train_new = np.array([[0.3, 0.4]])
+    adaptive_sampling_iterator.model_outputs = np.array([[1.0, 2.0, 3.0]])
+    adaptive_sampling_iterator.likelihood_model.forward_model.evaluate.return_value = {
+        "result": np.array([[4.0, 5.0, 6.0]])
+    }
+    adaptive_sampling_iterator.likelihood_model.normal_distribution.logpdf.return_value = np.array(
+        [0.0, 0.0]
+    )
+    adaptive_sampling_iterator.likelihood_model.normal_distribution.logpdf_const = 0.0
+    adaptive_sampling_iterator.likelihood_model.has_dynamic_noise.return_value = True
+    adaptive_sampling_iterator.likelihood_model.noise_type = "best_fit_adaptive_variance"
+
+    adaptive_sampling_iterator.eval_log_likelihood()
+    np.testing.assert_array_equal(
+        adaptive_sampling_iterator.likelihood_model.update_covariance.call_args.args[0],
+        np.array([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]]),
+    )
+
+
+def test_eval_log_likelihood_filters_failed_outputs_before_covariance_update(
+    adaptive_sampling_iterator,
+):
+    """Test covariance updates receive all successful filtered outputs."""
+    adaptive_sampling_iterator.x_train = np.array([[0.1, 0.2], [0.3, 0.4]])
+    adaptive_sampling_iterator.x_train_new = np.array([[0.1, 0.2], [0.3, 0.4]])
+    adaptive_sampling_iterator.model_outputs = np.empty((0, 3))
+    adaptive_sampling_iterator.likelihood_model.forward_model.evaluate.return_value = {
+        "result": np.array([[4.0, 5.0, 6.0], [np.nan, 8.0, 9.0]])
+    }
+    adaptive_sampling_iterator.likelihood_model.normal_distribution.logpdf.return_value = np.array(
+        [0.0]
+    )
+    adaptive_sampling_iterator.likelihood_model.normal_distribution.logpdf_const = 0.0
+    adaptive_sampling_iterator.likelihood_model.has_dynamic_noise.return_value = True
+    adaptive_sampling_iterator.likelihood_model.noise_type = "best_fit_adaptive_variance"
+
+    adaptive_sampling_iterator.eval_log_likelihood()
+
     np.testing.assert_array_equal(
         adaptive_sampling_iterator.likelihood_model.update_covariance.call_args.args[0],
         np.array([[4.0, 5.0, 6.0]]),
     )
 
-    adaptive_sampling_iterator.likelihood_model.update_covariance.reset_mock()
-    adaptive_sampling_iterator.likelihood_model.requires_covariance_history.return_value = True
-    adaptive_sampling_iterator.eval_log_likelihood()
-    np.testing.assert_array_equal(
-        adaptive_sampling_iterator.likelihood_model.update_covariance.call_args.args[0],
-        np.array([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0], [4.0, 5.0, 6.0]]),
-    )
 
-
-def test_core_run_passes_output_dir_to_visualization(adaptive_sampling_iterator, mocker):
-    """Test visualization receives the iterator output directory."""
+def test_core_run_calls_visualization_plot(adaptive_sampling_iterator, mocker):
+    """Test visualization is called with the stored results and iteration."""
     adaptive_sampling_iterator.num_steps = 1
     adaptive_sampling_iterator.eval_log_likelihood = Mock(return_value=np.array([0.0, 0.0]))
     adaptive_sampling_iterator.model.initialize = Mock()
@@ -189,6 +233,4 @@ def test_core_run_passes_output_dir_to_visualization(adaptive_sampling_iterator,
 
     adaptive_sampling_iterator.core_run()
 
-    adaptive_sampling_iterator.visualization.plot.assert_called_once_with(
-        {"dummy": "value"}, 0, adaptive_sampling_iterator.global_settings.output_dir
-    )
+    adaptive_sampling_iterator.visualization.plot.assert_called_once_with({"dummy": "value"}, 0)

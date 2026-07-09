@@ -14,6 +14,7 @@
 #
 """Unit tests for adaptive sampling visualization."""
 
+import matplotlib.pyplot as plt
 import numpy as np
 import pytest
 
@@ -52,8 +53,8 @@ def _adaptive_sampling_results(dimension):
     return {
         "x_train": [x_train],
         "x_train_failed": [np.empty((0, dimension))],
-        "model_outputs": [np.arange(x_train.shape[0]).reshape(-1, 1)],
-        "model_outputs_failed": [np.empty((0, 1))],
+        "model_outputs": [np.arange(x_train.shape[0] * 2, dtype=float).reshape(x_train.shape[0], 2)],
+        "model_outputs_failed": [np.empty((0, 2))],
         "y_train": [y_train],
         "x_train_new": [generator.normal(size=(3, dimension))],
         "particles": [particles],
@@ -63,7 +64,7 @@ def _adaptive_sampling_results(dimension):
     }
 
 
-def test_plot_marginal_posterior_grid_saves_2d_plot(global_settings, parameters_2d):
+def test_plot_marginal_posterior_grid_saves_2d_plot(tmp_path, parameters_2d):
     """Test that the marginal posterior pair grid is saved for 2D results."""
     results = _adaptive_sampling_results(dimension=2)
     visualization = AdaptiveSamplingVisualization(
@@ -73,16 +74,14 @@ def test_plot_marginal_posterior_grid_saves_2d_plot(global_settings, parameters_
         kde_num_points=20,
         contour_levels=4,
     )
+    visualization.prepare(tmp_path)
 
-    saved_paths = visualization.plot(results, iteration=0, plotting_dir=global_settings.output_dir)
+    visualization.plot(results, iteration=0)
 
-    assert saved_paths["marginal_posterior"].is_file()
-    assert saved_paths["marginal_posterior"] == (
-        global_settings.output_dir / "adaptive_sampling_marginal_posterior_0.png"
-    )
+    assert (tmp_path / "adaptive_sampling_iteration_0.png").is_file()
 
 
-def test_plot_saves_pair_grid_for_three_scalar_parameters(global_settings, parameters_3d):
+def test_plot_saves_pair_grid_for_three_scalar_parameters(tmp_path, parameters_3d):
     """Test that three scalar parameters are shown with the marginal posterior pair grid."""
     results = _adaptive_sampling_results(dimension=3)
     visualization = AdaptiveSamplingVisualization(
@@ -92,14 +91,14 @@ def test_plot_saves_pair_grid_for_three_scalar_parameters(global_settings, param
         kde_num_points=20,
         contour_levels=4,
     )
+    visualization.prepare(tmp_path)
 
-    saved_paths = visualization.plot(results, iteration=0, plotting_dir=global_settings.output_dir)
+    visualization.plot(results, iteration=0)
 
-    assert saved_paths["marginal_posterior"].is_file()
-    assert set(saved_paths) == {"marginal_posterior"}
+    assert (tmp_path / "adaptive_sampling_iteration_0.png").is_file()
 
 
-def test_plot_marginal_posterior_grid_draws_posterior_on_both_triangles(parameters_2d, tmp_path):
+def test_plot_marginal_posterior_grid_draws_posterior_on_both_triangles(parameters_2d):
     """Test that off-diagonal plots include the bivariate posterior on both triangles."""
     results = _adaptive_sampling_results(dimension=2)
     visualization = AdaptiveSamplingVisualization(
@@ -114,38 +113,71 @@ def test_plot_marginal_posterior_grid_draws_posterior_on_both_triangles(paramete
     lower_axes = pair_grid.axes[1, 0]
     assert upper_axes.collections
     assert lower_axes.collections
-    pair_grid.figure.clf()
+    plt.close(pair_grid.figure)
 
 
-def test_non_scalar_parameters_raise_value_error(tmp_path):
+def test_non_scalar_parameters_raise_value_error():
     """Test that only scalar parameters are accepted."""
     parameters = Parameters(x=Normal(mean=[0.0, 1.0], covariance=np.eye(2)))
 
     with pytest.raises(ValueError, match="supports only scalar parameters"):
-        AdaptiveSamplingVisualization(
-            parameters=parameters,
-        )
+        AdaptiveSamplingVisualization(parameters=parameters)
 
 
-def test_negative_iteration_raises_value_error(global_settings, parameters_2d):
-    """Test that negative iteration indices are not accepted."""
-    results = _adaptive_sampling_results(dimension=2)
-    visualization = AdaptiveSamplingVisualization(
-        parameters=parameters_2d,
-    )
-
-    with pytest.raises(ValueError, match="Iteration must be non-negative"):
-        visualization.plot(results, iteration=-1, plotting_dir=global_settings.output_dir)
-
-
-def test_adaptive_sampling_uses_agg_backend(global_settings, parameters_2d, mocker):
+def test_adaptive_sampling_prepare_uses_agg_backend(tmp_path, parameters_2d, mocker):
     """Test that adaptive-sampling plotting avoids GUI backends."""
     switch_backend = mocker.patch(
         "queens.visualization.adaptive_sampling_visualization.plt.switch_backend"
     )
+    visualization = AdaptiveSamplingVisualization(parameters=parameters_2d)
 
-    AdaptiveSamplingVisualization(
-        parameters=parameters_2d,
-    )
+    visualization.prepare(tmp_path)
 
     switch_backend.assert_called_once_with("Agg")
+
+
+def test_map_estimate_is_drawn_on_diag_and_lower_triangle(parameters_2d):
+    """Test MAP estimate is shown in diagonal and lower-triangle panels."""
+    results = _adaptive_sampling_results(dimension=2)
+    results["x_train"][0] = np.array([[0.2, -0.1], [0.8, 0.6]])
+    results["y_train"][0] = np.array([[-3.0], [-0.5]])
+    results["model_outputs"][0] = np.array([[10.0, 11.0], [20.0, 21.0]])
+    visualization = AdaptiveSamplingVisualization(
+        parameters=parameters_2d,
+        plot_map_estimate=True,
+        kde_grid_size=8,
+        contour_levels=4,
+    )
+
+    pair_grid = visualization._plot_marginal_posterior_grid(results, iteration=0)
+
+    diag_lines = pair_grid.axes[0, 0].lines
+    lower_collections = pair_grid.axes[1, 0].collections
+    assert any(line.get_label() == "MAP estimate" for line in diag_lines)
+    assert any(
+        getattr(collection, "get_label", lambda: None)() == "MAP estimate"
+        for collection in lower_collections
+    )
+    assert any(
+        "MAP model output" in text.get_text() and "[20. 21.]" in text.get_text()
+        for text in pair_grid.figure.texts
+    )
+    plt.close(pair_grid.figure)
+
+
+def test_map_training_sample_uses_log_prior_and_y_train(parameters_2d):
+    """Test MAP training sample is chosen via y_train plus prior log-density."""
+    parameters = Parameters(
+        x1=Normal(mean=[0.0], covariance=np.array([[1.0]])),
+        x2=Normal(mean=[0.0], covariance=np.array([[1.0]])),
+    )
+    results = _adaptive_sampling_results(dimension=2)
+    results["x_train"][0] = np.array([[2.8, 2.8], [0.0, 0.0]])
+    results["y_train"][0] = np.array([[0.0], [-0.2]])
+    results["model_outputs"][0] = np.array([[1.0, 2.0], [3.0, 4.0]])
+    visualization = AdaptiveSamplingVisualization(parameters=parameters, plot_map_estimate=True)
+
+    map_sample, map_model_output = visualization._get_map_sample(results, 0)
+
+    np.testing.assert_array_equal(map_sample, np.array([0.0, 0.0]))
+    np.testing.assert_array_equal(map_model_output, np.array([3.0, 4.0]))

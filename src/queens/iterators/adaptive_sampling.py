@@ -17,7 +17,6 @@
 import logging
 import pickle
 import types
-from typing import Any, Protocol
 
 import jax
 import jax.numpy as jnp
@@ -27,6 +26,8 @@ from jax import jit
 from queens.iterators._iterator import Iterator
 from queens.iterators.sequential_monte_carlo_chopin import SequentialMonteCarloChopin
 from queens.utils.io import load_result
+
+from queens.models.likelihoods.gaussian import Gaussian
 
 from queens.visualization.adaptive_sampling_visualization import AdaptiveSamplingVisualization
 
@@ -46,8 +47,6 @@ class AdaptiveSampling(Iterator):
         restart_file (str, opt): Result file path for restarts
         cs_div_criterion (float): Cauchy-Schwarz divergence stopping criterion threshold
         visualization (obj, opt): Adaptive sampling visualization object
-        fallback_candidate_pool_size (int): Number of prior candidates to score with the surrogate
-                                            posterior when SMC has too few fresh particles
         x_train (np.ndarray): Training input samples
         x_train_new (np.ndarray): Newly drawn training samples
         y_train (np.ndarray): Training likelihood output samples
@@ -59,7 +58,7 @@ class AdaptiveSampling(Iterator):
         model,
         parameters,
         global_settings,
-        likelihood_model,
+        likelihood_model: Gaussian,
         initial_train_samples,
         solving_iterator,
         num_new_samples,
@@ -104,6 +103,9 @@ class AdaptiveSampling(Iterator):
         self.model_outputs_failed = np.empty((0, self.likelihood_model.y_obs.size))
         self.visualization = visualization
 
+        if visualization is not None:
+            visualization.prepare(plotting_dir=self.global_settings.output_dir / "plots")
+
     def pre_run(self):
         """Pre run."""
         np.random.seed(self.seed)
@@ -118,7 +120,7 @@ class AdaptiveSampling(Iterator):
     def core_run(self):
         """Core run."""
         for i in range(self.num_steps):
-            _logger.info("Step: %i / %i", i + 1, self.num_steps)
+            _logger.info(f"\n{80*'*'}\nAdaptive sampling step: {i + 1} / {self.num_steps}\n{80*'*'}\n")
             self.x_train = np.concatenate([self.x_train, self.x_train_new], axis=0)
             self.y_train = self.eval_log_likelihood().reshape(-1, 1)
             _logger.info("Total number of successful solver evaluations: %i", self.x_train.shape[0])
@@ -152,7 +154,7 @@ class AdaptiveSampling(Iterator):
             cs_div = self.write_results(particles, weights, log_posterior, i)
             if self.visualization is not None:
                 results = load_result(self.global_settings.result_file(".pickle"))
-                self.visualization.plot(results, i, self.global_settings.output_dir)
+                self.visualization.plot(results, i)
 
             if cs_div < self.cs_div_criterion:
                 _logger.info(
@@ -176,10 +178,7 @@ class AdaptiveSampling(Iterator):
         # filter failed evaluations from model outputs and x_train
         self._filter_failed_evaluations()
         if self.likelihood_model.has_dynamic_noise():
-            covariance_update_outputs = self.model_outputs
-            if not self.likelihood_model.requires_covariance_history():
-                covariance_update_outputs = model_output
-            self.likelihood_model.update_covariance(covariance_update_outputs)
+            self.likelihood_model.update_covariance(self.model_outputs)
         log_likelihood = self.likelihood_model.normal_distribution.logpdf(self.model_outputs)
         log_likelihood -= self.likelihood_model.normal_distribution.logpdf_const
         return log_likelihood
