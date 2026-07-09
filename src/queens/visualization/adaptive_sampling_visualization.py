@@ -16,7 +16,6 @@
 
 from __future__ import annotations
 
-import logging
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
@@ -32,14 +31,11 @@ from numpy.typing import ArrayLike
 from seaborn.axisgrid import PairGrid
 from scipy.stats import gaussian_kde
 
+from queens.distributions.uniform import Uniform
 from queens.parameters.parameters import Parameters
-
-_logger = logging.getLogger(__name__)
 
 AdaptiveSamplingResults = Mapping[str, Sequence[Any]]
 Bounds = tuple[float, float]
-GroundTruth = Sequence[float] | np.ndarray | None
-
 
 class AdaptiveSamplingVisualization:
     """Plot adaptive sampling posterior diagnostics for scalar parameters."""
@@ -47,7 +43,6 @@ class AdaptiveSamplingVisualization:
     def __init__(
         self,
         parameters: Parameters,
-        ground_truth: GroundTruth = None,
         kde_grid_size: int = 50,
         kde_num_points: int = 100,
         contour_levels: int = 10,
@@ -57,7 +52,6 @@ class AdaptiveSamplingVisualization:
 
         Args:
             parameters (Parameters): Scalar QUEENS parameters to visualize.
-            ground_truth (sequence, opt): True values in the same order as ``parameters``.
             kde_grid_size (int): Number of grid points per axis for bivariate KDEs.
             kde_num_points (int): Number of support points for univariate KDEs.
             contour_levels (int): Number of contour levels for bivariate KDEs.
@@ -65,8 +59,7 @@ class AdaptiveSamplingVisualization:
         """
         self._check_scalar_parameters(parameters)
         self.parameters = parameters
-        self.bounds = self._bounds_from_parameters(parameters)
-        self.ground_truth = self._as_ground_truth_array(ground_truth)
+        self.plot_bounds: dict[str, Bounds] = {}
         self.kde_grid_size = kde_grid_size
         self.kde_num_points = kde_num_points
         self.contour_levels = contour_levels
@@ -101,6 +94,7 @@ class AdaptiveSamplingVisualization:
         weights = data_frame["weights"].to_numpy()
         contours: list[QuadContourSet] = []
         parameter_names = self.parameters.names
+        self.plot_bounds = self._plot_bounds(results, iteration)
 
         map_sample = None
         if self.plot_map_estimate:
@@ -118,15 +112,12 @@ class AdaptiveSamplingVisualization:
 
         if len(parameter_names) > 1:
             def plot_offdiag(x: pd.Series, y: pd.Series, **_kwargs: Any) -> None:
-                contour = self._plot_2d_posterior(x, y, weights)
-                if contour is not None and not contours:
-                    contours.append(contour)
+                contours.append(self._plot_2d_posterior(x, y, weights))
 
             def plot_upper(x: pd.Series, y: pd.Series, **_kwargs: Any) -> None:
                 self._plot_training_samples(x, y, results, iteration)
 
             def plot_lower(x: pd.Series, y: pd.Series, **_kwargs: Any) -> None:
-                self._plot_ground_truth_2d(x, y)
                 if self.plot_map_estimate:
                     self._plot_map_estimate_2d(x, y, map_sample)
 
@@ -141,8 +132,7 @@ class AdaptiveSamplingVisualization:
             fontsize=14,
             fontweight="bold",
         )
-        contour = contours[0] if contours else None
-        self._format_pair_grid_figure(pair_grid.figure, contour)
+        self._format_pair_grid_figure(pair_grid.figure, contours[0])
         return pair_grid
 
     def _particles_to_dataframe(
@@ -174,18 +164,16 @@ class AdaptiveSamplingVisualization:
         name = str(x.name)
         values = np.asarray(x, dtype=float).reshape(-1)
         weights = np.asarray(weights, dtype=float).reshape(-1)
-        bounds = self._bounds_for(name, values)
+        bounds = self.plot_bounds[name]
         grid = np.linspace(bounds[0], bounds[1], self.kde_num_points)
-        density = self._univariate_density(values, weights, grid)
+        density = gaussian_kde(values, weights=weights)(grid)
 
-        axes.plot(grid, density, label="Marginal posterior")
+        axes.plot(grid, density, label= "Posterior Density" if len(self.parameters.names) == 1 else "Marginal Posterior Density")
         axes.fill_between(grid, density, alpha=0.3)
 
         prior_density = np.asarray(self.parameters.dict[name].pdf(grid)).reshape(-1)
-        axes.plot(grid, prior_density, linestyle=":", label="Prior")
+        axes.plot(grid, prior_density, linestyle=":", label="Prior Density")
 
-        if (ground_truth := self._ground_truth_for(name)) is not None:
-            axes.axvline(ground_truth, color="red", linestyle=":", label="Ground truth")
         if self.plot_map_estimate and map_sample is not None:
             axes.axvline(
                 map_sample[self.parameters.names.index(name)],
@@ -199,20 +187,28 @@ class AdaptiveSamplingVisualization:
         axes.set_ylim(bottom=0)
 
     def _plot_2d_posterior(
-        self, x: pd.Series, y: pd.Series, weights: ArrayLike
-    ) -> QuadContourSet | None:
+        self,
+        x: pd.Series,
+        y: pd.Series,
+        weights: ArrayLike,
+    ) -> QuadContourSet:
         """Plot one bivariate marginal posterior."""
         axes = plt.gca()
         x_values = np.asarray(x, dtype=float).reshape(-1)
         y_values = np.asarray(y, dtype=float).reshape(-1)
         weights = np.asarray(weights, dtype=float).reshape(-1)
+        x_bounds = self.plot_bounds[str(x.name)]
+        y_bounds = self.plot_bounds[str(y.name)]
 
-        x_bounds = self._bounds_for(str(x.name), x_values)
-        y_bounds = self._bounds_for(str(y.name), y_values)
-        contour = self._contour_kde(axes, x_values, y_values, weights, x_bounds, y_bounds)
-        if contour is None:
-            axes.scatter(x_values, y_values, c=weights, cmap="plasma", s=12, alpha=0.7)
-
+        kde = gaussian_kde(np.vstack([x_values, y_values]), weights=weights)
+        grid_x, grid_y = np.meshgrid(
+            np.linspace(x_bounds[0], x_bounds[1], self.kde_grid_size),
+            np.linspace(y_bounds[0], y_bounds[1], self.kde_grid_size),
+        )
+        density = kde(np.vstack([grid_x.ravel(), grid_y.ravel()])).reshape(grid_x.shape)
+        contour = axes.contourf(
+            grid_x, grid_y, density, levels=self.contour_levels, cmap="plasma"
+        )
         axes.set_xlim(x_bounds)
         axes.set_ylim(y_bounds)
         return contour
@@ -227,29 +223,15 @@ class AdaptiveSamplingVisualization:
         """Overlay adaptive training samples in bivariate panels."""
         x_index = self.parameters.names.index(str(x.name))
         y_index = self.parameters.names.index(str(y.name))
-        self._scatter_2d_samples(
-            results["x_train"][iteration], x_index, y_index, ".", "gray", "Training", 12
-        )
-        self._scatter_2d_samples(
-            results["x_train_new"][iteration], x_index, y_index, "^", "green", "Next", 18
-        )
-        self._scatter_2d_samples(
-            results["x_train_failed"][iteration], x_index, y_index, "x", "red", "Failed", 20
-        )
 
-    def _plot_ground_truth_2d(self, x: pd.Series, y: pd.Series) -> None:
-        """Plot ground truth in bivariate panels."""
-        x_ground_truth = self._ground_truth_for(str(x.name))
-        y_ground_truth = self._ground_truth_for(str(y.name))
-        if x_ground_truth is None or y_ground_truth is None:
-            return
         plt.scatter(
-            x_ground_truth,
-            y_ground_truth,
-            marker="*",
-            color="red",
-            s=90,
-            label="Ground truth",
+            results["x_train"][iteration][:, x_index], results["x_train"][iteration][:, y_index], marker=".", color="gray", label="Training Samples", s=15
+        )
+        plt.scatter(
+            results["x_train_new"][iteration][:, x_index], results["x_train_new"][iteration][:, y_index], marker="+", color="green", linewidth=2, label="Next Training Samples", s=35
+        )
+        plt.scatter(
+            results["x_train_failed"][iteration][:, x_index], results["x_train_failed"][iteration][:, y_index], marker="x", color="red", linewidth=2, label="Failed Training Samples", s=20
         )
 
     def _plot_map_estimate_2d(
@@ -268,7 +250,7 @@ class AdaptiveSamplingVisualization:
             edgecolors="black",
             linewidths=1.2,
             s=45,
-            label = "MAP estimate"
+            label="MAP estimate",
         )
 
     def _format_pair_grid_figure(
@@ -285,110 +267,50 @@ class AdaptiveSamplingVisualization:
         if contour is not None and legend is not None:
             self._add_colorbar_below_legend(figure, legend, contour)
 
-    def _as_ground_truth_array(self, ground_truth: GroundTruth) -> np.ndarray | None:
-        """Return ground-truth values as an array ordered like ``parameters.names``."""
-        if ground_truth is None:
-            return None
-        values = np.asarray(ground_truth, dtype=float).reshape(-1)
-        if values.size != self.parameters.num_parameters:
-            raise ValueError("Ground truth must contain one value per scalar parameter.")
-        return values
+    def _plot_bounds(
+        self, results: AdaptiveSamplingResults, iteration: int
+    ) -> dict[str, Bounds]:
+        """Return plotting bounds determined from posterior particles and evaluated training samples."""
+        all_samples = self._all_plot_samples(results, iteration)
 
-    def _bounds_for(self, name: str, values: np.ndarray) -> Bounds:
-        """Return plotting bounds for a parameter."""
-        if name in self.bounds:
-            lower, upper = np.asarray(self.bounds[name], dtype=float).reshape(-1)[:2]
-            return float(lower), float(upper)
+        plot_bounds = {}
+        for index, name in enumerate(self.parameters.names):
+            values = all_samples[:, index]
+            finite = values[np.isfinite(values)]
 
-        finite = values[np.isfinite(values)]
-        if finite.size == 0:
-            return 0.0, 1.0
-        lower = float(np.min(finite))
-        upper = float(np.max(finite))
-        margin = max(1.0, abs(lower) * 0.1) if np.isclose(lower, upper) else 0.05 * (upper - lower)
-        return lower - margin, upper + margin
+            if finite.size == 0:
+                lower, upper = 0.0, 1.0
+            else:
+                lower = float(np.min(finite))
+                upper = float(np.max(finite))
 
-    def _ground_truth_for(self, name: str) -> float | None:
-        """Return a ground-truth value for a parameter, if available."""
-        if self.ground_truth is None:
-            return None
-        return float(self.ground_truth[self.parameters.names.index(name)])
+            parameter = self.parameters.dict[name]
+            if isinstance(parameter, Uniform):
+                lower_bound = np.asarray(parameter.lower_bound, dtype=float).reshape(-1)[0]
+                upper_bound = np.asarray(parameter.upper_bound, dtype=float).reshape(-1)[0]
+                lower = min(lower, float(lower_bound))
+                upper = max(upper, float(upper_bound))
 
-    def _univariate_density(
-        self, values: np.ndarray, weights: np.ndarray, grid: np.ndarray
-    ) -> np.ndarray:
-        """Evaluate a robust univariate weighted KDE."""
-        if values.size == 0:
-            return np.zeros_like(grid)
-        if values.size < 2 or np.isclose(np.var(values), 0.0):
-            hist, edges = np.histogram(values, bins=min(10, max(1, values.size)), weights=weights)
-            centers = 0.5 * (edges[1:] + edges[:-1])
-            return np.interp(grid, centers, hist, left=0.0, right=0.0)
-
-        try:
-            return gaussian_kde(values, weights=weights)(grid)
-        except (ValueError, np.linalg.LinAlgError) as error:
-            _logger.debug("Falling back to histogram for univariate KDE: %s", error)
-            hist, edges = np.histogram(
-                values,
-                bins=min(20, values.size),
-                range=(grid[0], grid[-1]),
-                weights=weights,
-                density=True,
+            margin = (
+                max(1.0, abs(lower) * 0.1)
+                if np.isclose(lower, upper)
+                else 0.05 * (upper - lower)
             )
-            centers = 0.5 * (edges[1:] + edges[:-1])
-            return np.interp(grid, centers, hist, left=0.0, right=0.0)
+            plot_bounds[name] = (lower - margin, upper + margin)
 
-    def _contour_kde(
-        self,
-        axes: Axes,
-        x_values: np.ndarray,
-        y_values: np.ndarray,
-        weights: np.ndarray,
-        x_bounds: Bounds,
-        y_bounds: Bounds,
-    ) -> QuadContourSet | None:
-        """Draw a robust bivariate weighted KDE contour."""
-        enough_points = x_values.size >= 3 and not (
-            np.isclose(np.var(x_values), 0.0) or np.isclose(np.var(y_values), 0.0)
-        )
-        if not enough_points:
-            return None
+        return plot_bounds
 
-        try:
-            kde = gaussian_kde(np.vstack([x_values, y_values]), weights=weights)
-        except (ValueError, np.linalg.LinAlgError) as error:
-            _logger.debug("Skipping bivariate KDE because gaussian_kde failed: %s", error)
-            return None
-
-        grid_x, grid_y = np.meshgrid(
-            np.linspace(x_bounds[0], x_bounds[1], self.kde_grid_size),
-            np.linspace(y_bounds[0], y_bounds[1], self.kde_grid_size),
-        )
-        density = kde(np.vstack([grid_x.ravel(), grid_y.ravel()])).reshape(grid_x.shape)
-        return axes.contourf(grid_x, grid_y, density, levels=self.contour_levels, cmap="plasma")
-
-    def _scatter_2d_samples(
-        self,
-        samples: ArrayLike,
-        x_index: int,
-        y_index: int,
-        marker: str,
-        color: str,
-        label: str,
-        size: int,
-    ) -> None:
-        """Scatter samples in a bivariate panel."""
-        samples = np.asarray(samples, dtype=float)
-        if samples.size == 0:
-            return
-        plt.scatter(
-            samples[:, x_index],
-            samples[:, y_index],
-            marker=marker,
-            s=size,
-            color=color,
-            label=label,
+    def _all_plot_samples(
+        self, results: AdaptiveSamplingResults, iteration: int
+    ) -> np.ndarray:
+        """Return all samples that should be visible in the plots."""
+        return np.vstack(
+            [
+                np.asarray(results[key][iteration], dtype=float).reshape(
+                    -1, self.parameters.num_parameters
+                )
+                for key in ("particles", "x_train", "x_train_new", "x_train_failed")
+            ]
         )
 
     @staticmethod
@@ -409,8 +331,8 @@ class AdaptiveSamplingVisualization:
             return figure.legend(unique.values(), unique.keys(), **legend_kwargs)
         return None
 
-    @staticmethod
     def _add_colorbar_below_legend(
+        self,
         figure: Figure,
         legend: Any,
         contour: QuadContourSet,
@@ -428,7 +350,7 @@ class AdaptiveSamplingVisualization:
             ]
         )
         colorbar = figure.colorbar(contour, orientation="horizontal", cax=colorbar_axes)
-        colorbar.set_label("Bivariate marginal posterior")
+        colorbar.set_label("Posterior Density" if len(self.parameters.names) == 2 else "Marginal Posterior Density")
         if len(contour.levels) >= 2:
             colorbar.set_ticks([contour.levels[0], contour.levels[-1]])
             colorbar.set_ticklabels(["Low", "High"])
@@ -442,17 +364,6 @@ class AdaptiveSamplingVisualization:
                     "Adaptive sampling visualization currently supports only scalar parameters. "
                     f"Parameter '{parameter_name}' has dimension {parameter.dimension}."
                 )
-
-    @staticmethod
-    def _bounds_from_parameters(parameters: Parameters) -> dict[str, Bounds]:
-        """Return finite bounds available from scalar parameters."""
-        bounds = {}
-        for parameter_name, parameter in parameters.dict.items():
-            if hasattr(parameter, "lower_bound") and hasattr(parameter, "upper_bound"):
-                lower_bound = np.asarray(parameter.lower_bound, dtype=float).reshape(-1)[0]
-                upper_bound = np.asarray(parameter.upper_bound, dtype=float).reshape(-1)[0]
-                bounds[parameter_name] = (lower_bound, upper_bound)
-        return bounds
 
     def _get_map_sample(
         self, results: AdaptiveSamplingResults, iteration: int

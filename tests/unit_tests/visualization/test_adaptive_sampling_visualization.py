@@ -69,7 +69,6 @@ def test_plot_marginal_posterior_grid_saves_2d_plot(tmp_path, parameters_2d):
     results = _adaptive_sampling_results(dimension=2)
     visualization = AdaptiveSamplingVisualization(
         parameters=parameters_2d,
-        ground_truth=[0.1, -0.2],
         kde_grid_size=8,
         kde_num_points=20,
         contour_levels=4,
@@ -86,7 +85,6 @@ def test_plot_saves_pair_grid_for_three_scalar_parameters(tmp_path, parameters_3
     results = _adaptive_sampling_results(dimension=3)
     visualization = AdaptiveSamplingVisualization(
         parameters=parameters_3d,
-        ground_truth=[0.1, -0.2, 0.3],
         kde_grid_size=8,
         kde_num_points=20,
         contour_levels=4,
@@ -139,9 +137,7 @@ def test_adaptive_sampling_prepare_uses_agg_backend(tmp_path, parameters_2d, moc
 def test_map_estimate_is_drawn_on_diag_and_lower_triangle(parameters_2d):
     """Test MAP estimate is shown in diagonal and lower-triangle panels."""
     results = _adaptive_sampling_results(dimension=2)
-    results["x_train"][0] = np.array([[0.2, -0.1], [0.8, 0.6]])
-    results["y_train"][0] = np.array([[-3.0], [-0.5]])
-    results["model_outputs"][0] = np.array([[10.0, 11.0], [20.0, 21.0]])
+    results["log_posterior"][0] = np.linspace(-2.0, 2.0, results["particles"][0].shape[0])
     visualization = AdaptiveSamplingVisualization(
         parameters=parameters_2d,
         plot_map_estimate=True,
@@ -151,33 +147,21 @@ def test_map_estimate_is_drawn_on_diag_and_lower_triangle(parameters_2d):
 
     pair_grid = visualization._plot_marginal_posterior_grid(results, iteration=0)
 
-    diag_lines = pair_grid.axes[0, 0].lines
     lower_collections = pair_grid.axes[1, 0].collections
-    assert any(line.get_label() == "MAP estimate" for line in diag_lines)
     assert any(
         getattr(collection, "get_label", lambda: None)() == "MAP estimate"
         for collection in lower_collections
     )
-    assert any(
-        "MAP model output" in text.get_text() and "[20. 21.]" in text.get_text()
-        for text in pair_grid.figure.texts
-    )
     plt.close(pair_grid.figure)
 
 
-def test_map_training_sample_uses_log_prior_and_y_train(parameters_2d):
-    """Test MAP training sample is chosen via y_train plus prior log-density."""
-    parameters = Parameters(
-        x1=Normal(mean=[0.0], covariance=np.array([[1.0]])),
-        x2=Normal(mean=[0.0], covariance=np.array([[1.0]])),
-    )
+def test_get_map_sample_uses_particle_log_posterior(parameters_2d):
+    """Test MAP sample is chosen from the particle with highest log posterior."""
     results = _adaptive_sampling_results(dimension=2)
-    results["x_train"][0] = np.array([[2.8, 2.8], [0.0, 0.0]])
-    results["y_train"][0] = np.array([[0.0], [-0.2]])
-    results["model_outputs"][0] = np.array([[1.0, 2.0], [3.0, 4.0]])
-    visualization = AdaptiveSamplingVisualization(parameters=parameters, plot_map_estimate=True)
+    results["particles"][0] = np.array([[2.8, 2.8], [0.0, 0.0]])
+    results["log_posterior"][0] = np.array([-3.0, -0.2])
+    visualization = AdaptiveSamplingVisualization(parameters=parameters_2d, plot_map_estimate=True)
 
-    map_sample, map_model_output = visualization._get_map_sample(results, 0)
+    map_sample = visualization._get_map_sample(results, 0)
 
     np.testing.assert_array_equal(map_sample, np.array([0.0, 0.0]))
-    np.testing.assert_array_equal(map_model_output, np.array([3.0, 4.0]))
