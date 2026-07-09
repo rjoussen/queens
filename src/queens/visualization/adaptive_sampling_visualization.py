@@ -250,7 +250,7 @@ class AdaptiveSamplingVisualization:
             edgecolors="black",
             linewidths=1.2,
             s=45,
-            label="MAP estimate",
+            label=f"MAP estimate\n[{"\n ".join(f'{name}={map_sample[i]:.3f}' for i, name in enumerate(self.parameters.names))}]",
         )
 
     def _format_pair_grid_figure(
