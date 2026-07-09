@@ -136,8 +136,9 @@ class AdaptiveSampling(Iterator):
                 target = self_.current_target(epn)
                 particles = np.lib.recfunctions.structured_to_unstructured(xp.theta)
                 if not (particles == x_train_ml).all(-1).any():
-                    for j, par in enumerate(xp.theta.dtype.names):
-                        xp.theta[par][0] = x_train_ml[j]
+                    xp.theta[0] = np.lib.recfunctions.unstructured_to_structured(
+                        x_train_ml, dtype=xp.theta.dtype
+                    )
                     target(xp)
                 return self_.move(xp, target)
 
